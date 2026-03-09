@@ -144,6 +144,12 @@ export class CedarlingEngine {
         .replace(/.*::"/g, "")
         .replace(/"$/, "");
 
+      // Determine resource entity type from the request string
+      // Supports Tool::"x", Shell::"x", API::"x", etc.
+      let resourceEntityType = "Tool";
+      const typeMatch = request.resource.match(/^(?:\w+::)?(\w+)::/);
+      if (typeMatch) resourceEntityType = typeMatch[1];
+
       const result = await this.cedarling.authorize_unsigned({
         principals: [
           {
@@ -157,7 +163,7 @@ export class CedarlingEngine {
         action: `${this.namespace}::Action::"${actionName}"`,
         resource: {
           cedar_entity_mapping: {
-            entity_type: `${this.namespace}::Tool`,
+            entity_type: `${this.namespace}::${resourceEntityType}`,
             id: resourceId,
           },
           ...(request.context ?? {}),
@@ -189,37 +195,47 @@ export class CedarlingEngine {
   }
 
   /**
-   * Enable a tool by adding a permit policy and rebuilding Cedarling.
+   * Enable a resource by adding a permit policy and rebuilding Cedarling.
+   * resourceType: "Tool" | "Shell" | "API"
+   * action: the Cedar action name (e.g., "call_tool", "exec_command", "call_api")
    */
-  enableTool(qualifiedName: string): void {
-    const policyId = `tool-enable-${qualifiedName.replace(/\//g, "-")}`;
-    const raw = `permit(\n  principal is ${this.namespace}::${this.agentEntityType},\n  action == ${this.namespace}::Action::"call_tool",\n  resource == ${this.namespace}::Tool::"${qualifiedName}"\n);`;
+  enableResource(qualifiedName: string, resourceType: string = "Tool", action: string = "call_tool"): void {
+    const slug = qualifiedName.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const policyId = `${resourceType.toLowerCase()}-enable-${slug}`;
+    const raw = `permit(\n  principal is ${this.namespace}::${this.agentEntityType},\n  action == ${this.namespace}::Action::"${action}",\n  resource == ${this.namespace}::${resourceType}::"${qualifiedName}"\n);`;
 
-    // Remove any disable policy
-    const disableId = `tool-disable-${qualifiedName.replace(/\//g, "-")}`;
+    const disableId = `${resourceType.toLowerCase()}-disable-${slug}`;
     this.removePolicyFile(disableId);
 
     this.writePolicyFile(policyId, raw);
     this.policies.set(policyId, { effect: "permit", raw });
     this.rebuildCedarling().catch(() => {});
-    this.logger.info(`Enabled tool: ${qualifiedName}`);
+    this.logger.info(`Enabled ${resourceType}: ${qualifiedName}`);
   }
 
   /**
-   * Disable a tool by adding a forbid policy and rebuilding Cedarling.
+   * Disable a resource by adding a forbid policy and rebuilding Cedarling.
    */
-  disableTool(qualifiedName: string): void {
-    const policyId = `tool-disable-${qualifiedName.replace(/\//g, "-")}`;
-    const raw = `forbid(\n  principal,\n  action == ${this.namespace}::Action::"call_tool",\n  resource == ${this.namespace}::Tool::"${qualifiedName}"\n);`;
+  disableResource(qualifiedName: string, resourceType: string = "Tool", action: string = "call_tool"): void {
+    const slug = qualifiedName.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const policyId = `${resourceType.toLowerCase()}-disable-${slug}`;
+    const raw = `forbid(\n  principal,\n  action == ${this.namespace}::Action::"${action}",\n  resource == ${this.namespace}::${resourceType}::"${qualifiedName}"\n);`;
 
-    // Remove any enable policy
-    const enableId = `tool-enable-${qualifiedName.replace(/\//g, "-")}`;
+    const enableId = `${resourceType.toLowerCase()}-enable-${slug}`;
     this.removePolicyFile(enableId);
 
     this.writePolicyFile(policyId, raw);
     this.policies.set(policyId, { effect: "forbid", raw });
     this.rebuildCedarling().catch(() => {});
-    this.logger.info(`Disabled tool: ${qualifiedName}`);
+    this.logger.info(`Disabled ${resourceType}: ${qualifiedName}`);
+  }
+
+  /** Backwards-compatible aliases */
+  enableTool(qualifiedName: string): void {
+    this.enableResource(qualifiedName, "Tool", "call_tool");
+  }
+  disableTool(qualifiedName: string): void {
+    this.disableResource(qualifiedName, "Tool", "call_tool");
   }
 
   /**
@@ -293,27 +309,29 @@ export class CedarlingEngine {
       };
     }
 
-    // Verification: try a dummy authorize request. If the policy store loaded,
-    // schemas and policies are valid.
+    // Verification: try dummy authorize requests for each resource type.
+    // If the policy store loaded, schemas and policies are valid.
     try {
-      await this.cedarling.authorize_unsigned({
-        principals: [
-          {
+      for (const [action, resType] of [["call_tool", "Tool"], ["exec_command", "Shell"], ["call_api", "API"]]) {
+        await this.cedarling.authorize_unsigned({
+          principals: [
+            {
+              cedar_entity_mapping: {
+                entity_type: `${this.namespace}::${this.agentEntityType}`,
+                id: "__verify_probe__",
+              },
+            },
+          ],
+          action: `${this.namespace}::Action::"${action}"`,
+          resource: {
             cedar_entity_mapping: {
-              entity_type: `${this.namespace}::${this.agentEntityType}`,
+              entity_type: `${this.namespace}::${resType}`,
               id: "__verify_probe__",
             },
           },
-        ],
-        action: `${this.namespace}::Action::"call_tool"`,
-        resource: {
-          cedar_entity_mapping: {
-            entity_type: `${this.namespace}::Tool`,
-            id: "__verify_probe__",
-          },
-        },
-        context: {},
-      });
+          context: {},
+        });
+      }
       return { ok: true, issues: [], durationMs: Date.now() - start };
     } catch (err: any) {
       return {
@@ -491,6 +509,45 @@ export class CedarlingEngine {
               },
             },
           },
+          Shell: {
+            shape: {
+              type: "Record",
+              attributes: {
+                command: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                workdir: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+              },
+            },
+          },
+          API: {
+            shape: {
+              type: "Record",
+              attributes: {
+                url: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                method: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                domain: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+              },
+            },
+          },
         },
         actions: {
           call_tool: {
@@ -505,6 +562,38 @@ export class CedarlingEngine {
               principalTypes: [this.agentEntityType],
               resourceTypes: ["Tool"],
               context: { type: "Record", attributes: {} },
+            },
+          },
+          exec_command: {
+            appliesTo: {
+              principalTypes: [this.agentEntityType],
+              resourceTypes: ["Shell"],
+              context: {
+                type: "Record",
+                attributes: {
+                  args: {
+                    type: "EntityOrCommon",
+                    name: "String",
+                    required: false,
+                  },
+                },
+              },
+            },
+          },
+          call_api: {
+            appliesTo: {
+              principalTypes: [this.agentEntityType],
+              resourceTypes: ["API"],
+              context: {
+                type: "Record",
+                attributes: {
+                  body: {
+                    type: "EntityOrCommon",
+                    name: "String",
+                    required: false,
+                  },
+                },
+              },
             },
           },
         },

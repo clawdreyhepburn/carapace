@@ -42,6 +42,32 @@ export interface McpTool {
   enabled: boolean;
 }
 
+/** A gated resource — tools, shell commands, or APIs */
+export interface GatedResource {
+  id: string;              // unique identifier (e.g., "filesystem/read_file", "bash", "api.github.com")
+  type: "tool" | "shell" | "api";
+  name: string;            // display name
+  description: string;
+  source: string;          // server name, "local", or domain
+  enabled: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ShellRule {
+  id: string;              // e.g., "bash", "git", "npm"
+  pattern: string;         // command pattern (binary name or glob)
+  description: string;
+  enabled: boolean;
+}
+
+export interface ApiRule {
+  id: string;              // e.g., "api.github.com", "registry.npmjs.org"
+  pattern: string;         // URL pattern (domain or prefix)
+  method?: string;         // HTTP method filter (optional)
+  description: string;
+  enabled: boolean;
+}
+
 export interface ServerStatus {
   connected: boolean;
   toolCount: number;

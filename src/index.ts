@@ -158,6 +158,184 @@ export default function register(api: OpenClawPluginApi) {
     },
   });
 
+  // --- Agent tool: execute a shell command through Cedar authorization ---
+  api.registerTool({
+    name: "carapace_exec",
+    label: "Shell Exec (Carapace)",
+    description:
+      "Execute a shell command through the Carapace Cedar proxy. The command is authorized by Cedar policies before execution. Use this when you want Cedar-gated shell access.",
+    parameters: {
+      type: "object",
+      required: ["command"],
+      properties: {
+        command: {
+          type: "string",
+          description: "The shell command to execute (e.g., 'git status', 'npm install')",
+        },
+        workdir: {
+          type: "string",
+          description: "Working directory for the command (optional)",
+        },
+        timeout: {
+          type: "number",
+          description: "Timeout in seconds (default: 30)",
+        },
+      },
+    },
+    async execute(_toolCallId: string, params: { command: string; workdir?: string; timeout?: number }) {
+      const { command, workdir, timeout = 30 } = params;
+
+      // Extract the binary name for policy matching
+      const binary = command.trim().split(/\s+/)[0].replace(/^.*\//, "");
+
+      // Authorize via Cedar
+      const decision = await cedar.authorize({
+        principal: `Agent::"openclaw"`,
+        action: `Action::"exec_command"`,
+        resource: `Shell::"${binary}"`,
+        context: { args: command, workdir: workdir ?? "" },
+      });
+
+      if (decision.decision === "deny") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `DENIED by Cedar policy: shell command "${binary}"\nFull command: ${command}\nReason: ${decision.reasons.join(", ") || "default deny"}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Execute the command
+      try {
+        const { execSync } = await import("node:child_process");
+        const result = execSync(command, {
+          cwd: workdir,
+          timeout: timeout * 1000,
+          maxBuffer: 1024 * 1024,
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        return {
+          content: [{ type: "text", text: result }],
+        };
+      } catch (err: any) {
+        const output = err.stdout ?? err.stderr ?? err.message;
+        return {
+          content: [{ type: "text", text: `Command failed (exit ${err.status ?? "?"}): ${output}` }],
+          isError: true,
+        };
+      }
+    },
+  }, { optional: true });
+
+  // --- Agent tool: make an HTTP API call through Cedar authorization ---
+  api.registerTool({
+    name: "carapace_fetch",
+    label: "API Fetch (Carapace)",
+    description:
+      "Make an HTTP API call through the Carapace Cedar proxy. The request is authorized by Cedar policies before being sent. Use this when you want Cedar-gated outbound API access.",
+    parameters: {
+      type: "object",
+      required: ["url"],
+      properties: {
+        url: {
+          type: "string",
+          description: "The URL to fetch",
+        },
+        method: {
+          type: "string",
+          description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Default: GET",
+        },
+        headers: {
+          type: "object",
+          description: "HTTP headers to include",
+        },
+        body: {
+          type: "string",
+          description: "Request body (for POST/PUT/PATCH)",
+        },
+        timeout: {
+          type: "number",
+          description: "Timeout in seconds (default: 30)",
+        },
+      },
+    },
+    async execute(_toolCallId: string, params: {
+      url: string; method?: string; headers?: Record<string, string>; body?: string; timeout?: number
+    }) {
+      const { url, method = "GET", headers = {}, body, timeout = 30 } = params;
+
+      // Extract domain for policy matching
+      let domain: string;
+      try {
+        domain = new URL(url).hostname;
+      } catch {
+        return {
+          content: [{ type: "text", text: `Invalid URL: ${url}` }],
+          isError: true,
+        };
+      }
+
+      // Authorize via Cedar
+      const decision = await cedar.authorize({
+        principal: `Agent::"openclaw"`,
+        action: `Action::"call_api"`,
+        resource: `API::"${domain}"`,
+        context: { url, method, body: body ?? "" },
+      });
+
+      if (decision.decision === "deny") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `DENIED by Cedar policy: API call to "${domain}"\nURL: ${url}\nMethod: ${method}\nReason: ${decision.reasons.join(", ") || "default deny"}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Make the HTTP request
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout * 1000);
+
+        const response = await fetch(url, {
+          method,
+          headers,
+          body: body ?? undefined,
+          signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        const responseText = await response.text();
+        const truncated = responseText.length > 50000
+          ? responseText.slice(0, 50000) + "\n...[truncated]"
+          : responseText;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `HTTP ${response.status} ${response.statusText}\n\n${truncated}`,
+            },
+          ],
+          isError: !response.ok,
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text", text: `API call failed: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  }, { optional: true });
+
   // --- CLI command ---
   api.registerCli?.(
     ({ program }) => {

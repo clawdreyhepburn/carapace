@@ -18,11 +18,11 @@
 
 ---
 
-Carapace is an [OpenClaw](https://github.com/openclaw/openclaw) plugin that sits between your AI agent and its MCP tools. It aggregates multiple MCP servers, discovers their tools, and enforces [Cedar](https://www.cedarpolicy.com/) authorization policies on every tool call — with a local GUI where humans can see and control everything.
+Carapace is an [OpenClaw](https://github.com/openclaw/openclaw) plugin that puts Cedar authorization between your AI agent and everything it can do — MCP tools, shell commands, and outbound API calls. It aggregates multiple MCP servers, discovers their tools, gates shell execution by binary name, controls outbound HTTP by domain, and enforces [Cedar](https://www.cedarpolicy.com/) policies on every operation — with a local GUI where humans can see and control everything.
 
-**The problem:** MCP gives agents access to tools. But who decides *which* tools an agent can use? Today the answer is "whatever's in the config file" — a static, all-or-nothing list with no audit trail, no formal guarantees, and no human oversight.
+**The problem:** Agents have access to tools, a shell, and the network. But who decides what they can actually *do*? Today the answer is "whatever's in the config file" — a static, all-or-nothing list with no audit trail, no formal guarantees, and no human oversight.
 
-**The solution:** Carapace puts Cedar between your agent and its tools. Cedar policies are declarative, auditable, and formally verifiable. The local GUI makes it accessible to humans who don't want to write policy files by hand. Toggle a switch, and the Cedar policy updates. It's that simple.
+**The solution:** Carapace puts Cedar between your agent and its capabilities. Cedar policies are declarative, auditable, and formally verifiable. The local GUI makes it accessible to humans who don't want to write policy files by hand. Toggle a switch, and the Cedar policy updates. It's that simple.
 
 ## Design Philosophy
 
@@ -42,12 +42,17 @@ The progression:
 |  OpenClaw   |---->|                            |---->|  (filesystem)   |
 |  Agent      |     |  +----------------------+  |     +-----------------+
 |             |     |  |   Cedarling WASM      |  |     |  MCP Server B   |
-|             |     |  |   (Cedar 4.4.2)       |  |---->|  (GitHub)       |
+|  mcp_call   |---->|  |   (Cedar 4.4.2)       |  |---->|  (GitHub)       |
 |             |     |  +----------------------+  |     +-----------------+
-|             |     |  +----------------------+  |     |  MCP Server C   |
-|             |     |  |  Local Control GUI    |  |---->|  (database)     |
+| carapace    |     |                            |     +-----------------+
+|   _exec   --|---->|  Cedar: exec_command       |---->|  Shell (local)  |
+|             |     |                            |     +-----------------+
+| carapace    |     |                            |     +-----------------+
+|   _fetch  --|---->|  Cedar: call_api           |---->|  HTTP (remote)  |
 |             |     |  +----------------------+  |     +-----------------+
-+-------------+     +--------------+--------------+
+|             |     |  |  Local Control GUI    |  |
++-------------+     |  +----------------------+  |
+                    +--------------+--------------+
                                    |
                             +------+------+
                             |    Human    |
@@ -55,7 +60,7 @@ The progression:
                             +-------------+
 ```
 
-**Every tool call flows through Cedar evaluation.** If the policy says deny, the call never reaches the upstream MCP server. The agent gets a clear denial message with the reason.
+**Every operation flows through Cedar evaluation.** MCP tool calls, shell commands, and outbound API requests are all authorized by Cedar policies before execution. If the policy says deny, the operation never happens. The agent gets a clear denial message with the reason.
 
 ## Screenshots
 
@@ -179,6 +184,32 @@ forbid(
   resource == Jans::Tool::"filesystem/write_file"
 );
 
+// Allow git and npm commands, block everything else
+permit(
+  principal is Jans::Workload,
+  action == Jans::Action::"exec_command",
+  resource == Jans::Shell::"git"
+);
+permit(
+  principal is Jans::Workload,
+  action == Jans::Action::"exec_command",
+  resource == Jans::Shell::"npm"
+);
+
+// Allow API calls to GitHub, block all other domains
+permit(
+  principal is Jans::Workload,
+  action == Jans::Action::"call_api",
+  resource == Jans::API::"api.github.com"
+);
+
+// Block a specific domain
+forbid(
+  principal,
+  action == Jans::Action::"call_api",
+  resource == Jans::API::"evil.example.com"
+);
+
 // Allow everything (use with caution)
 permit(
   principal is Jans::Workload,
@@ -198,9 +229,20 @@ Click **⚡ Verify** to validate that all policies are syntactically correct and
 Carapace uses [Cedarling](https://github.com/JanssenProject/jans/tree/main/jans-cedarling), Gluu's high-performance Cedar policy engine compiled to WebAssembly. This means:
 
 - **Real Cedar evaluation** — not a simplified subset. Full Cedar 4.4.2 with the official Rust SDK.
+- **Three resource types** — `Tool` (MCP tools), `Shell` (commands by binary name), `API` (outbound HTTP by domain). All go through the same Cedar engine.
 - **Forbid always wins** — if any policy says `forbid`, the request is denied regardless of any `permit` policies. This is core Cedar semantics and prevents privilege escalation.
-- **Allow-all by default** — installing Carapace doesn't break anything. All tools work until you add `forbid` policies. Switch to `deny-all` when you're ready for least-privilege.
+- **Allow-all by default** — installing Carapace doesn't break anything. All operations work until you add `forbid` policies. Switch to `deny-all` when you're ready for least-privilege.
 - **Sub-millisecond evaluation** — WASM runs at near-native speed. Typical authorization decisions take <6ms.
+
+### Resource Types
+
+| Type | Cedar Entity | Action | Gates | Example |
+|------|-------------|--------|-------|---------|
+| MCP Tool | `Jans::Tool` | `call_tool` | Upstream MCP server calls | `Tool::"filesystem/write_file"` |
+| Shell | `Jans::Shell` | `exec_command` | Local command execution | `Shell::"rm"`, `Shell::"git"` |
+| API | `Jans::API` | `call_api` | Outbound HTTP requests | `API::"api.github.com"` |
+
+Shell commands are matched by **binary name** (the first token of the command). API calls are matched by **domain name**. This keeps policies readable and auditable — you can see at a glance "this agent can run `git` and `npm` but not `rm` or `curl`."
 
 ### Policy Store Format
 
@@ -227,7 +269,7 @@ The GUI communicates with Carapace through a local REST API:
 |----------|--------|-------------|
 | `/api/status` | GET | Server status, all tools, all policies |
 | `/api/tools` | GET | List tools (optional `?server=` filter) |
-| `/api/toggle` | POST | Enable/disable a tool `{"tool": "...", "enabled": true}` |
+| `/api/toggle` | POST | Enable/disable a resource `{"tool": "...", "enabled": true, "type": "tool\|shell\|api"}` |
 | `/api/policy` | POST | Create/update a policy `{"id": "...", "raw": "..."}` |
 | `/api/policy` | DELETE | Delete a policy `{"id": "..."}` |
 | `/api/policies` | GET | List all policies |
@@ -250,7 +292,8 @@ Carapace is designed to protect against:
 ### What Carapace Does NOT Protect Against
 
 - **Malicious MCP servers** — Carapace trusts the upstream MCP servers to behave as described. It does not sandbox server execution.
-- **Tool argument validation** — Carapace authorizes *which* tool can be called, not *what arguments* are passed. (Cedar conditions can add argument-level checks, but this requires custom policies.)
+- **Argument-level validation** — Carapace authorizes *which* operation can be performed (which tool, which binary, which domain), not the specific arguments. Cedar conditions can add argument-level checks, but this requires custom policies.
+- **Shell argument injection** — Carapace gates by binary name (`git`, `npm`), not by the full command line. An agent permitted to run `git` could run `git push --force`. Use Cedar `when` conditions on `context.args` for finer control.
 - **Network-level attacks** — The GUI runs on localhost without authentication. See [GUI Security](#gui-security) below.
 
 ### GUI Security
