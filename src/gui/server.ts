@@ -7,21 +7,20 @@
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { McpAggregator } from "../mcp-aggregator.js";
-import type { CedarEngine } from "../cedar-engine.js";
-import type { Logger } from "../types.js";
+import type { Logger, CedarEngineInterface } from "../types.js";
 import { guiHtml } from "./html.js";
 
 interface GuiOpts {
   port: number;
   aggregator: McpAggregator;
-  cedar: CedarEngine;
+  cedar: CedarEngineInterface;
   logger: Logger;
 }
 
 export class ControlGui {
   private port: number;
   private aggregator: McpAggregator;
-  private cedar: CedarEngine;
+  private cedar: CedarEngineInterface;
   private logger: Logger;
   private server: Server | null = null;
 

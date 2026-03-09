@@ -5,7 +5,7 @@
  * and serves a local GUI for human oversight.
  */
 
-import { CedarEngine } from "./cedar-engine.js";
+import { CedarlingEngine } from "./cedar-engine-cedarling.js";
 import { McpAggregator } from "./mcp-aggregator.js";
 import { ControlGui } from "./gui/server.js";
 import type { PluginApi, PluginConfig } from "./types.js";
@@ -17,7 +17,7 @@ export default function register(api: PluginApi) {
   const config: PluginConfig = api.config?.plugins?.entries?.["mcp-cedar-proxy"]?.config ?? {};
   const logger = api.logger;
 
-  const cedar = new CedarEngine({
+  const cedar = new CedarlingEngine({
     policyDir: config.policyDir ?? "~/.openclaw/mcp-policies/",
     defaultPolicy: config.defaultPolicy ?? "deny-all",
     verify: config.verify ?? false,

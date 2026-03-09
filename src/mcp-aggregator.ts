@@ -7,12 +7,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 // import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 // import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CedarEngine } from "./cedar-engine.js";
-import type { Logger, ServerConfig, McpTool, ServerStatus } from "./types.js";
+import type { Logger, ServerConfig, McpTool, ServerStatus, CedarEngineInterface } from "./types.js";
 
 interface AggregatorOpts {
   servers: Record<string, ServerConfig>;
-  cedar: CedarEngine;
+  cedar: CedarEngineInterface;
   logger: Logger;
 }
 
@@ -29,7 +28,7 @@ interface ConnectedServer {
 export class McpAggregator {
   private servers: Map<string, ConnectedServer> = new Map();
   private serverConfigs: Record<string, ServerConfig>;
-  private cedar: CedarEngine;
+  private cedar: CedarEngineInterface;
   private logger: Logger;
 
   constructor(opts: AggregatorOpts) {

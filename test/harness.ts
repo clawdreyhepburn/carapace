@@ -3,7 +3,7 @@
  * so we can test the GUI and Cedar enforcement end-to-end.
  */
 
-import { CedarEngine } from "../src/cedar-engine.js";
+import { CedarlingEngine } from "../src/cedar-engine-cedarling.js";
 import { McpAggregator } from "../src/mcp-aggregator.js";
 import { ControlGui } from "../src/gui/server.js";
 
@@ -24,7 +24,7 @@ async function main() {
   const { execSync } = await import("node:child_process");
   execSync(`rm -rf /tmp/mcp-cedar-proxy-test`);
 
-  const cedar = new CedarEngine({
+  const cedar = new CedarlingEngine({
     policyDir: POLICY_DIR,
     defaultPolicy: "deny-all",
     verify: false,

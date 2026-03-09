@@ -5,7 +5,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "openclaw": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -15,13 +17,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
+    "@janssenproject/cedarling_wasm": "^1.15.0",
     "@modelcontextprotocol/sdk": "^1.12.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "vitest": "^3.0.0",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   },
   "engines": {
     "node": ">=20"

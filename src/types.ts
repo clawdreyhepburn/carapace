@@ -69,6 +69,21 @@ export interface AuthzRequest {
   context?: Record<string, unknown>;
 }
 
+/** Common interface for Cedar engines (homebrew and Cedarling) */
+export interface CedarEngineInterface {
+  init(): Promise<void>;
+  authorize(request: AuthzRequest): Promise<CedarDecision>;
+  enableTool(qualifiedName: string): void;
+  disableTool(qualifiedName: string): void;
+  isToolEnabled(qualifiedName: string): boolean;
+  savePolicy(id: string, raw: string): void;
+  deletePolicy(id: string): boolean;
+  getPolicies(): Array<{ id: string; effect: string; raw: string }>;
+  getSchema(): CedarSchemaInfo;
+  saveSchema(raw: string): void;
+  verify(): Promise<VerifyResult>;
+}
+
 export interface VerifyResult {
   ok: boolean;
   issues: string[];
