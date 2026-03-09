@@ -1,6 +1,6 @@
 {
   "name": "@clawdreyhepburn/carapace",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Immutable policy boundaries for MCP tool access. Powered by Cedar + Cedarling WASM.",
   "license": "Apache-2.0",
   "type": "module",
