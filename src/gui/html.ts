@@ -1,5 +1,5 @@
 /**
- * Single-file GUI for MCP Cedar Proxy.
+ * Single-file GUI for Carapace.
  * Returns complete HTML with embedded CSS and JS — no build step needed.
  */
 
@@ -9,7 +9,7 @@ export function guiHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MCP Cedar Proxy</title>
+  <title>Carapace</title>
   <style>
     :root {
       --bg: #0a0a0a;
@@ -333,7 +333,7 @@ export function guiHtml(): string {
 </head>
 <body>
   <header>
-    <h1>🦞 MCP Cedar Proxy</h1>
+    <h1>🦞 Carapace</h1>
     <div class="stats">
       <span class="count" id="enabled-count">-</span> / <span class="count" id="total-count">-</span> tools enabled
     </div>

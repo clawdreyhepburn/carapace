@@ -349,7 +349,7 @@ export class CedarlingEngine {
     try {
       const policyStore = this.buildPolicyStore();
       const config = {
-        CEDARLING_APPLICATION_NAME: "MCP Cedar Proxy",
+        CEDARLING_APPLICATION_NAME: "Carapace",
         CEDARLING_POLICY_STORE_LOCAL: JSON.stringify(policyStore),
         CEDARLING_LOG_TYPE: "off",
         CEDARLING_USER_AUTHZ: "disabled",
@@ -416,7 +416,7 @@ export class CedarlingEngine {
       cedar_version: "v4.0.0",
       policy_stores: {
         mcp: {
-          name: "MCP Cedar Proxy",
+          name: "Carapace",
           description: "Auto-generated policy store for MCP tool authorization",
           policies,
           schema: schemaB64,

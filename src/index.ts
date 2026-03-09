@@ -1,5 +1,5 @@
 /**
- * MCP Cedar Proxy — OpenClaw Plugin
+ * Carapace — OpenClaw Plugin
  *
  * Aggregates upstream MCP servers, enforces Cedar policies on tool access,
  * and serves a local GUI for human oversight.
@@ -10,11 +10,11 @@ import { McpAggregator } from "./mcp-aggregator.js";
 import { ControlGui } from "./gui/server.js";
 import type { PluginApi, PluginConfig } from "./types.js";
 
-export const id = "mcp-cedar-proxy";
-export const name = "MCP Cedar Proxy";
+export const id = "carapace";
+export const name = "Carapace";
 
 export default function register(api: PluginApi) {
-  const config: PluginConfig = api.config?.plugins?.entries?.["mcp-cedar-proxy"]?.config ?? {};
+  const config: PluginConfig = api.config?.plugins?.entries?.["carapace"]?.config ?? {};
   const logger = api.logger;
 
   const cedar = new CedarlingEngine({
@@ -39,9 +39,9 @@ export default function register(api: PluginApi) {
 
   // --- Background service: connect to MCP servers and serve GUI ---
   api.registerService({
-    id: "mcp-cedar-proxy",
+    id: "carapace",
     async start() {
-      logger.info("MCP Cedar Proxy starting...");
+      logger.info("Carapace starting...");
       await cedar.init();
       await aggregator.connectAll();
       await gui.start();
@@ -50,7 +50,7 @@ export default function register(api: PluginApi) {
     async stop() {
       await gui.stop();
       await aggregator.disconnectAll();
-      logger.info("MCP Cedar Proxy stopped");
+      logger.info("Carapace stopped");
     },
   });
 
@@ -130,11 +130,11 @@ export default function register(api: PluginApi) {
   // --- CLI command ---
   api.registerCli?.(
     ({ program }) => {
-      const cmd = program.command("mcp-proxy").description("MCP Cedar Proxy management");
+      const cmd = program.command("mcp-proxy").description("Carapace management");
 
       cmd.command("status").action(async () => {
         const servers = aggregator.getServerStatus();
-        console.log("\nMCP Cedar Proxy Status\n");
+        console.log("\nCarapace Status\n");
         for (const [name, status] of Object.entries(servers)) {
           const icon = status.connected ? "✅" : "❌";
           console.log(`  ${icon} ${name} — ${status.toolCount} tools`);
@@ -166,7 +166,7 @@ export default function register(api: PluginApi) {
   );
 
   // --- Gateway RPC ---
-  api.registerGatewayMethod?.("mcp-cedar-proxy.status", ({ respond }) => {
+  api.registerGatewayMethod?.("carapace.status", ({ respond }) => {
     const servers = aggregator.getServerStatus();
     const tools = aggregator.listTools();
     respond(true, { servers, toolCount: tools.length, enabledCount: tools.filter((t) => t.enabled).length });

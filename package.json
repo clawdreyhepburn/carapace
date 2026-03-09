@@ -1,7 +1,7 @@
 {
-  "name": "@openclaw/mcp-cedar-proxy",
+  "name": "@openclaw/carapace",
   "version": "0.1.0",
-  "description": "MCP proxy with Cedar authorization and local control GUI for OpenClaw",
+  "description": "Immutable policy boundaries for MCP tool access. Powered by Cedar + Cedarling WASM.",
   "license": "Apache-2.0",
   "type": "module",
   "openclaw": {

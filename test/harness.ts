@@ -1,5 +1,5 @@
 /**
- * Standalone test harness — runs the MCP Cedar Proxy outside OpenClaw
+ * Standalone test harness — runs the Carapace outside OpenClaw
  * so we can test the GUI and Cedar enforcement end-to-end.
  */
 
@@ -18,7 +18,7 @@ const POLICY_DIR = "/tmp/mcp-cedar-proxy-test/policies";
 const PORT = 19820;
 
 async function main() {
-  console.log("=== MCP Cedar Proxy Test Harness ===\n");
+  console.log("=== Carapace Test Harness ===\n");
 
   // Clean slate
   const { execSync } = await import("node:child_process");

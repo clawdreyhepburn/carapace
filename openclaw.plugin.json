@@ -1,7 +1,7 @@
 {
-  "id": "mcp-cedar-proxy",
-  "name": "MCP Cedar Proxy",
-  "description": "Aggregates MCP servers with Cedar policy enforcement and a local control GUI",
+  "id": "carapace",
+  "name": "Carapace",
+  "description": "Immutable policy boundaries for MCP tool access. Your agent's exoskeleton.",
   "version": "0.1.0",
   "configSchema": {
     "type": "object",
