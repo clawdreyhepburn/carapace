@@ -56,7 +56,7 @@ export class McpAggregator {
     for (const [name, server] of this.servers) {
       try {
         await server.transport?.close?.();
-        this.logger.debug(`Disconnected: ${name}`);
+        this.logger.debug?.(`Disconnected: ${name}`);
       } catch (err) {
         this.logger.warn(`Error disconnecting ${name}: ${err}`);
       }

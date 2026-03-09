@@ -2,20 +2,12 @@
  * Type definitions for the MCP Cedar Proxy plugin.
  */
 
-export interface PluginApi {
-  config: any;
-  logger: Logger;
-  registerService(service: { id: string; start(): Promise<void> | void; stop(): Promise<void> | void }): void;
-  registerTool?(tool: ToolDef): void;
-  registerCli?(fn: (ctx: { program: any }) => void, opts?: { commands: string[] }): void;
-  registerGatewayMethod?(name: string, handler: (ctx: { respond: (ok: boolean, data: any) => void }) => void): void;
-}
 
 export interface Logger {
   info(msg: string, ...args: any[]): void;
   warn(msg: string, ...args: any[]): void;
   error(msg: string, ...args: any[]): void;
-  debug(msg: string, ...args: any[]): void;
+  debug?(msg: string, ...args: any[]): void;
 }
 
 export interface ToolDef {

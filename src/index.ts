@@ -8,13 +8,40 @@
 import { CedarlingEngine } from "./cedar-engine-cedarling.js";
 import { McpAggregator } from "./mcp-aggregator.js";
 import { ControlGui } from "./gui/server.js";
-import type { PluginApi, PluginConfig } from "./types.js";
+import type { PluginConfig } from "./types.js";
 
 export const id = "carapace";
 export const name = "Carapace";
 
-export default function register(api: PluginApi) {
-  const config: PluginConfig = api.config?.plugins?.entries?.["carapace"]?.config ?? {};
+/**
+ * OpenClaw plugin API shape (matches real runtime).
+ * We define it here to avoid depending on OpenClaw types at build time.
+ */
+interface OpenClawPluginApi {
+  pluginConfig: any;
+  logger: {
+    info(msg: string, ...args: any[]): void;
+    warn(msg: string, ...args: any[]): void;
+    error(msg: string, ...args: any[]): void;
+    debug?(msg: string, ...args: any[]): void;
+  };
+  registerService(service: { id: string; start(): Promise<void> | void; stop(): Promise<void> | void }): void;
+  registerTool(
+    tool: {
+      name: string;
+      label?: string;
+      description: string;
+      parameters: Record<string, any>;
+      execute(toolCallId: string, params: any): Promise<any>;
+    },
+    opts?: { optional?: boolean },
+  ): void;
+  registerCli?(fn: (ctx: { program: any }) => void, opts?: { commands: string[] }): void;
+  registerGatewayMethod?(name: string, handler: (ctx: { respond: (ok: boolean, data: any) => void }) => void): void;
+}
+
+export default function register(api: OpenClawPluginApi) {
+  const config: PluginConfig = api.pluginConfig ?? {};
   const logger = api.logger;
 
   const cedar = new CedarlingEngine({
@@ -55,10 +82,11 @@ export default function register(api: PluginApi) {
   });
 
   // --- Agent tool: list available MCP tools ---
-  api.registerTool?.({
+  api.registerTool({
     name: "mcp_tools",
+    label: "MCP Tools (Carapace)",
     description:
-      "List all MCP tools available through the Cedar proxy, with their enabled/disabled status",
+      "List all MCP tools available through the Carapace Cedar proxy, with their enabled/disabled status",
     parameters: {
       type: "object",
       properties: {
@@ -68,8 +96,8 @@ export default function register(api: PluginApi) {
         },
       },
     },
-    async handler({ server }: { server?: string }) {
-      const tools = aggregator.listTools(server);
+    async execute(_toolCallId: string, params: { server?: string }) {
+      const tools = aggregator.listTools(params.server);
       return {
         content: [
           {
@@ -82,10 +110,11 @@ export default function register(api: PluginApi) {
   });
 
   // --- Agent tool: invoke an MCP tool through the proxy ---
-  api.registerTool?.({
+  api.registerTool({
     name: "mcp_call",
+    label: "MCP Call (Carapace)",
     description:
-      "Call an MCP tool through the Cedar proxy. The call is authorized by Cedar policies before reaching the upstream server.",
+      "Call an MCP tool through the Carapace Cedar proxy. The call is authorized by Cedar policies before reaching the upstream server.",
     parameters: {
       type: "object",
       required: ["tool"],
@@ -100,7 +129,9 @@ export default function register(api: PluginApi) {
         },
       },
     },
-    async handler({ tool, arguments: args }: { tool: string; arguments?: Record<string, unknown> }) {
+    async execute(_toolCallId: string, params: { tool: string; arguments?: Record<string, unknown> }) {
+      const { tool, arguments: args } = params;
+
       // Authorize via Cedar
       const decision = await cedar.authorize({
         principal: 'Agent::"openclaw"',
@@ -130,16 +161,19 @@ export default function register(api: PluginApi) {
   // --- CLI command ---
   api.registerCli?.(
     ({ program }) => {
-      const cmd = program.command("mcp-proxy").description("Carapace management");
+      const cmd = program.command("carapace").description("Carapace — MCP tool authorization");
 
       cmd.command("status").action(async () => {
         const servers = aggregator.getServerStatus();
-        console.log("\nCarapace Status\n");
+        console.log("\n🦞 Carapace Status\n");
         for (const [name, status] of Object.entries(servers)) {
           const icon = status.connected ? "✅" : "❌";
           console.log(`  ${icon} ${name} — ${status.toolCount} tools`);
         }
-        console.log(`\nGUI: http://localhost:${config.guiPort ?? 19820}\n`);
+        const tools = aggregator.listTools();
+        const enabled = tools.filter((t) => t.enabled).length;
+        console.log(`\n  ${enabled}/${tools.length} tools enabled`);
+        console.log(`  GUI: http://localhost:${config.guiPort ?? 19820}\n`);
       });
 
       cmd.command("tools").action(async () => {
@@ -162,7 +196,7 @@ export default function register(api: PluginApi) {
         }
       });
     },
-    { commands: ["mcp-proxy"] },
+    { commands: ["carapace"] },
   );
 
   // --- Gateway RPC ---

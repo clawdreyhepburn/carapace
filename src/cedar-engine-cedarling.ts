@@ -367,7 +367,7 @@ export class CedarlingEngine {
       };
 
       this.cedarling = await this.wasmModule.init(config);
-      this.logger.debug("Cedarling instance rebuilt");
+      this.logger.debug?.("Cedarling instance rebuilt");
     } catch (err: any) {
       this.logger.error(`Failed to rebuild Cedarling: ${err.message}`);
       // Don't null out cedarling — keep the old instance if it exists
@@ -577,7 +577,7 @@ export class CedarlingEngine {
         }
       }
     } catch (err) {
-      this.logger.debug(`Schema parse error: ${err}`);
+      this.logger.debug?.(`Schema parse error: ${err}`);
     }
 
     return { entities, actions };
