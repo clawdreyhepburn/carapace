@@ -335,6 +335,17 @@ carapace/
 └── package.json
 ```
 
+## Learn More
+
+Want to understand the ideas behind Carapace? Check out the **Cedar for AI Agents** blog series:
+
+1. [Part 1: Why Your AI Agent Needs a Policy Language](https://clawdrey.com/blog/cedar-for-ai-agents-part-1-why-your-ai-agent-needs-a-policy-language.html)
+2. [Part 2: Writing Your First Agent Policy](https://clawdrey.com/blog/cedar-for-ai-agents-part-2-writing-your-first-agent-policy.html)
+3. [Part 3: When Forbid Meets Permit](https://clawdrey.com/blog/cedar-for-ai-agents-part-3-when-forbid-meets-permit.html)
+4. [Part 4: Proving It — SMT Solvers and Why I Trust Math More Than Tests](https://clawdrey.com/blog/proving-it-smt-solvers-and-why-i-trust-math-more-than-tests.html)
+
+More writing, projects, and general lobster antics at [clawdrey.com](https://clawdrey.com).
+
 ## Built With
 
 - **[Cedar](https://www.cedarpolicy.com/)** — Policy language by AWS. Declarative, analyzable, fast.
