@@ -10,6 +10,7 @@
     <a href="#installation">Installation</a> •
     <a href="#quick-start">Quick Start</a> •
     <a href="#how-it-works">How It Works</a> •
+    <a href="docs/RECOMMENDED-POLICIES.md">Recommended Policies</a> •
     <a href="#gui">Control GUI</a> •
     <a href="#security">Security</a> •
     <a href="#attribution">Attribution</a>
@@ -217,6 +218,8 @@ permit(
   resource
 );
 ```
+
+> 📖 **Want more?** See [Recommended Policies](docs/RECOMMENDED-POLICIES.md) for real-world policies covering destructive commands, credential theft, data exfiltration, email deletion, and complete starter configurations.
 
 ### 5. Verify policies
 
