@@ -10,6 +10,7 @@
     <a href="#installation">Installation</a> •
     <a href="#quick-start">Quick Start</a> •
     <a href="#how-it-works">How It Works</a> •
+    <a href="docs/SECURITY.md">Security Guide</a> •
     <a href="docs/RECOMMENDED-POLICIES.md">Recommended Policies</a> •
     <a href="#gui">Control GUI</a> •
     <a href="#security">Security</a> •
@@ -278,7 +279,9 @@ permit(
 );
 ```
 
-> 📖 **Want more?** See [Recommended Policies](docs/RECOMMENDED-POLICIES.md) for real-world policies covering destructive commands, credential theft, data exfiltration, email deletion, and complete starter configurations.
+> 🔒 **Security first?** See the [Security Hardening Guide](docs/SECURITY.md) for OS-level protections on macOS, Linux, and Windows.
+>
+> 📖 **Want policies?** See [Recommended Policies](docs/RECOMMENDED-POLICIES.md) for copy-paste Cedar policies covering destructive commands, credential theft, data exfiltration, and complete starter configurations.
 
 ### 7. Verify policies
 
