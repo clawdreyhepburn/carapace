@@ -107,7 +107,7 @@ openclaw configure
 ### Standalone (for development/testing)
 
 ```bash
-git clone https://github.com/openclaw/carapace.git
+git clone https://github.com/clawdreyhepburn/carapace.git
 cd carapace
 npm install
 npx tsx test/harness.ts
@@ -298,7 +298,7 @@ Each server entry supports:
 ## Development
 
 ```bash
-git clone https://github.com/openclaw/carapace.git
+git clone https://github.com/clawdreyhepburn/carapace.git
 cd carapace
 npm install
 
