@@ -576,6 +576,11 @@ export class CedarlingEngine {
                     name: "String",
                     required: false,
                   },
+                  workdir: {
+                    type: "EntityOrCommon",
+                    name: "String",
+                    required: false,
+                  },
                 },
               },
             },
@@ -587,6 +592,16 @@ export class CedarlingEngine {
               context: {
                 type: "Record",
                 attributes: {
+                  url: {
+                    type: "EntityOrCommon",
+                    name: "String",
+                    required: false,
+                  },
+                  method: {
+                    type: "EntityOrCommon",
+                    name: "String",
+                    required: false,
+                  },
                   body: {
                     type: "EntityOrCommon",
                     name: "String",
