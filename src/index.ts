@@ -8,6 +8,7 @@
 import { CedarlingEngine } from "./cedar-engine-cedarling.js";
 import { McpAggregator } from "./mcp-aggregator.js";
 import { ControlGui } from "./gui/server.js";
+import { LlmProxy } from "./llm-proxy.js";
 import type { PluginConfig } from "./types.js";
 
 export const id = "carapace";
@@ -63,6 +64,24 @@ export default function register(api: OpenClawPluginApi) {
     cedar,
     logger,
   });
+
+  // --- LLM Proxy: intercept tool calls at the API level ---
+  const proxyConfig = config.proxy;
+  const proxy = proxyConfig?.enabled ? new LlmProxy({
+    port: proxyConfig.port ?? 19821,
+    upstream: {
+      anthropic: proxyConfig.upstream?.anthropic ? {
+        url: proxyConfig.upstream.anthropic.url ?? "https://api.anthropic.com",
+        apiKey: proxyConfig.upstream.anthropic.apiKey,
+      } : undefined,
+      openai: proxyConfig.upstream?.openai ? {
+        url: proxyConfig.upstream.openai.url ?? "https://api.openai.com",
+        apiKey: proxyConfig.upstream.openai.apiKey,
+      } : undefined,
+    },
+    cedar,
+    logger,
+  }) : null;
 
   // --- Bypass detection: warn if built-in tools aren't denied ---
   const BYPASS_TOOLS = ["exec", "web_fetch", "web_search"];
@@ -121,17 +140,26 @@ export default function register(api: OpenClawPluginApi) {
       await gui.start();
       logger.info(`Control GUI at http://localhost:${config.guiPort ?? 19820}`);
 
-      // Check for bypass vulnerabilities
-      const bypasses = checkForBypasses();
-      if (bypasses.length > 0) {
-        logger.warn(
-          `⚠️  BYPASS RISK: Built-in tools [${bypasses.join(", ")}] are NOT denied. ` +
-          `Agents can use these to bypass Carapace Cedar policies. ` +
-          `Run "openclaw carapace setup" to fix this automatically.`
+      if (proxy) {
+        await proxy.start();
+        logger.info(
+          `🛡️  LLM Proxy active on http://127.0.0.1:${proxyConfig!.port ?? 19821} — ` +
+          `all tool calls go through Cedar`
         );
+      } else {
+        // Check for bypass vulnerabilities only when proxy is disabled
+        const bypasses = checkForBypasses();
+        if (bypasses.length > 0) {
+          logger.warn(
+            `⚠️  BYPASS RISK: Built-in tools [${bypasses.join(", ")}] are NOT denied and LLM proxy is not enabled. ` +
+            `Agents can use these to bypass Carapace Cedar policies. ` +
+            `Enable the LLM proxy (recommended) or run "openclaw carapace setup" to deny built-in tools.`
+          );
+        }
       }
     },
     async stop() {
+      if (proxy) await proxy.stop();
       await gui.stop();
       await aggregator.disconnectAll();
       logger.info("Carapace stopped");
@@ -408,7 +436,16 @@ export default function register(api: OpenClawPluginApi) {
         const tools = aggregator.listTools();
         const enabled = tools.filter((t) => t.enabled).length;
         console.log(`\n  ${enabled}/${tools.length} tools enabled`);
-        console.log(`  GUI: http://localhost:${config.guiPort ?? 19820}\n`);
+        console.log(`  GUI: http://localhost:${config.guiPort ?? 19820}`);
+
+        if (proxy) {
+          const stats = proxy.getStats();
+          console.log(`\n  🛡️  LLM Proxy: http://127.0.0.1:${proxyConfig!.port ?? 19821}`);
+          console.log(`  Requests: ${stats.requests} | Tool calls evaluated: ${stats.toolCallsEvaluated} | Denied: ${stats.toolCallsDenied}`);
+        } else {
+          console.log(`\n  ⚠️  LLM Proxy: disabled`);
+        }
+        console.log();
       });
 
       cmd.command("tools").action(async () => {

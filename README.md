@@ -38,19 +38,22 @@ The progression:
 ## Architecture
 
 ```
-+-------------+     +----------------------------+     +-----------------+
-|             |     |         Carapace           |     |  MCP Server A   |
-|  OpenClaw   |---->|                            |---->|  (filesystem)   |
-|  Agent      |     |  +----------------------+  |     +-----------------+
-|             |     |  |   Cedarling WASM      |  |     |  MCP Server B   |
-|  mcp_call   |---->|  |   (Cedar 4.4.2)       |  |---->|  (GitHub)       |
-|             |     |  +----------------------+  |     +-----------------+
-| carapace    |     |                            |     +-----------------+
-|   _exec   --|---->|  Cedar: exec_command       |---->|  Shell (local)  |
-|             |     |                            |     +-----------------+
-| carapace    |     |                            |     +-----------------+
-|   _fetch  --|---->|  Cedar: call_api           |---->|  HTTP (remote)  |
-|             |     |  +----------------------+  |     +-----------------+
+                    +----------------------------+
+                    |         Carapace           |
++-------------+     |                            |     +------------------+
+|             |     |  +----------------------+  |     |   Anthropic /    |
+|  OpenClaw   |---->|  |    LLM Proxy         |  |---->|   OpenAI API     |
+|  Agent      |     |  | (intercepts tool_use)|  |     +------------------+
+|             |     |  +----------------------+  |
+|             |     |           |                |     +-----------------+
+|             |     |     Cedar evaluates        |     |  MCP Server A   |
+|             |     |     every tool call        |---->|  (filesystem)   |
+|             |     |           |                |     +-----------------+
+|             |     |  +----------------------+  |     |  MCP Server B   |
+|             |     |  |   Cedarling WASM      |  |---->|  (GitHub)       |
+|             |     |  |   (Cedar 4.4.2)       |  |     +-----------------+
+|             |     |  +----------------------+  |
+|             |     |  +----------------------+  |
 |             |     |  |  Local Control GUI    |  |
 +-------------+     |  +----------------------+  |
                     +--------------+--------------+
@@ -61,7 +64,11 @@ The progression:
                             +-------------+
 ```
 
-**Every operation flows through Cedar evaluation.** MCP tool calls, shell commands, and outbound API requests are all authorized by Cedar policies before execution. If the policy says deny, the operation never happens. The agent gets a clear denial message with the reason.
+### Two enforcement modes
+
+**LLM Proxy (recommended):** Carapace holds the real API key and proxies all LLM traffic. When the LLM suggests a tool call, Carapace evaluates it against Cedar *before returning the response to OpenClaw*. Denied tool calls are stripped from the response — OpenClaw never sees them and can't execute them. **This is un-bypassable.** The agent can't call tools that Cedar denies because it literally never receives the tool call instruction.
+
+**Tool-level gating:** Carapace registers Cedar-gated agent tools (`carapace_exec`, `carapace_fetch`, `mcp_call`) that authorize each operation before executing it. This requires denying built-in tools via `openclaw carapace setup` to prevent bypass. Use this mode when you can't or don't want to proxy LLM traffic.
 
 ## Screenshots
 
@@ -155,7 +162,41 @@ In your OpenClaw config, add the servers you want Carapace to manage:
 }
 ```
 
-### 2. Close the bypass gap
+### 2. Enable the LLM Proxy (recommended)
+
+The LLM Proxy is the strongest enforcement mode. Carapace holds the real API key and intercepts tool calls before OpenClaw can execute them.
+
+```json5
+{
+  plugins: {
+    entries: {
+      carapace: {
+        enabled: true,
+        config: {
+          proxy: {
+            enabled: true,
+            port: 19821,
+            upstream: {
+              anthropic: { apiKey: "sk-ant-your-real-key-here" }
+            }
+          }
+        }
+      }
+    }
+  },
+  // Point OpenClaw at the proxy instead of the real API
+  providers: {
+    anthropic: {
+      apiKey: "carapace-proxy",  // dummy — proxy holds the real key
+      baseUrl: "http://127.0.0.1:19821"
+    }
+  }
+}
+```
+
+Now every tool call the LLM suggests goes through Cedar. If Cedar denies it, the tool call is stripped from the response before OpenClaw ever sees it.
+
+### 3. (Alternative) Close the bypass gap without the proxy
 
 By default, agents can still use OpenClaw's built-in `exec` and `web_fetch` tools, which bypass Cedar entirely. Run setup to close this:
 
@@ -173,18 +214,18 @@ openclaw carapace check
 
 > ⚠️ **Without this step, Carapace policies are advisory, not enforced.** The agent can simply choose to use the built-in tools instead. Always run `carapace setup` for real security.
 
-### 3. Open the control GUI
+### 4. Open the control GUI
 
 Navigate to [http://localhost:19820](http://localhost:19820) in your browser. You'll see all discovered tools from all connected servers.
 
-### 4. Enable tools
+### 5. Enable tools
 
 Toggle individual tools on/off. Each toggle writes a Cedar policy:
 
 - **Toggle ON** → creates a `permit` policy for that tool
 - **Toggle OFF** → creates a `forbid` policy for that tool
 
-### 5. Create custom policies
+### 6. Create custom policies
 
 Click **"+ New Policy"** to open the visual builder, or edit policies directly in the Policies tab. Examples:
 
@@ -239,7 +280,7 @@ permit(
 
 > 📖 **Want more?** See [Recommended Policies](docs/RECOMMENDED-POLICIES.md) for real-world policies covering destructive commands, credential theft, data exfiltration, email deletion, and complete starter configurations.
 
-### 6. Verify policies
+### 7. Verify policies
 
 Click **⚡ Verify** to validate that all policies are syntactically correct and consistent.
 

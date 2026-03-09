@@ -23,6 +23,15 @@ export interface PluginConfig {
   policyDir?: string;
   defaultPolicy?: "deny-all" | "allow-all";
   verify?: boolean;
+  /** LLM proxy configuration — sits between agent and LLM provider */
+  proxy?: {
+    enabled?: boolean;
+    port?: number;  // default: 19821
+    upstream?: {
+      anthropic?: { url?: string; apiKey: string };
+      openai?: { url?: string; apiKey: string };
+    };
+  };
 }
 
 export interface ServerConfig {
