@@ -155,18 +155,36 @@ In your OpenClaw config, add the servers you want Carapace to manage:
 }
 ```
 
-### 2. Open the control GUI
+### 2. Close the bypass gap
+
+By default, agents can still use OpenClaw's built-in `exec` and `web_fetch` tools, which bypass Cedar entirely. Run setup to close this:
+
+```bash
+openclaw carapace setup
+```
+
+This adds `exec`, `web_fetch`, and `web_search` to `tools.deny` in your OpenClaw config, forcing agents to use `carapace_exec` and `carapace_fetch` instead — which go through Cedar.
+
+You can check for bypasses anytime:
+
+```bash
+openclaw carapace check
+```
+
+> ⚠️ **Without this step, Carapace policies are advisory, not enforced.** The agent can simply choose to use the built-in tools instead. Always run `carapace setup` for real security.
+
+### 3. Open the control GUI
 
 Navigate to [http://localhost:19820](http://localhost:19820) in your browser. You'll see all discovered tools from all connected servers.
 
-### 3. Enable tools
+### 4. Enable tools
 
 Toggle individual tools on/off. Each toggle writes a Cedar policy:
 
 - **Toggle ON** → creates a `permit` policy for that tool
 - **Toggle OFF** → creates a `forbid` policy for that tool
 
-### 4. Create custom policies
+### 5. Create custom policies
 
 Click **"+ New Policy"** to open the visual builder, or edit policies directly in the Policies tab. Examples:
 
@@ -221,7 +239,7 @@ permit(
 
 > 📖 **Want more?** See [Recommended Policies](docs/RECOMMENDED-POLICIES.md) for real-world policies covering destructive commands, credential theft, data exfiltration, email deletion, and complete starter configurations.
 
-### 5. Verify policies
+### 6. Verify policies
 
 Click **⚡ Verify** to validate that all policies are syntactically correct and consistent.
 

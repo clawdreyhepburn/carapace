@@ -64,6 +64,53 @@ export default function register(api: OpenClawPluginApi) {
     logger,
   });
 
+  // --- Bypass detection: warn if built-in tools aren't denied ---
+  const BYPASS_TOOLS = ["exec", "web_fetch", "web_search"];
+
+  function checkForBypasses(): string[] {
+    // Read OpenClaw config to check tools.deny
+    try {
+      const { readFileSync, existsSync } = require("node:fs");
+      const { join } = require("node:path");
+      const { homedir } = require("node:os");
+      const configPath = join(homedir(), ".openclaw", "openclaw.json");
+      if (!existsSync(configPath)) return BYPASS_TOOLS;
+      const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+      const denied: string[] = cfg.tools?.deny ?? [];
+      return BYPASS_TOOLS.filter((t) => !denied.includes(t));
+    } catch {
+      return BYPASS_TOOLS;
+    }
+  }
+
+  function patchConfigDenyTools(): { patched: string[]; alreadyDenied: string[] } {
+    const { readFileSync, writeFileSync, existsSync } = require("node:fs");
+    const { join } = require("node:path");
+    const { homedir } = require("node:os");
+    const configPath = join(homedir(), ".openclaw", "openclaw.json");
+
+    let cfg: any = {};
+    if (existsSync(configPath)) {
+      cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+    }
+
+    if (!cfg.tools) cfg.tools = {};
+    if (!cfg.tools.deny) cfg.tools.deny = [];
+
+    const alreadyDenied = BYPASS_TOOLS.filter((t) => cfg.tools.deny.includes(t));
+    const toAdd = BYPASS_TOOLS.filter((t) => !cfg.tools.deny.includes(t));
+
+    for (const tool of toAdd) {
+      cfg.tools.deny.push(tool);
+    }
+
+    if (toAdd.length > 0) {
+      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+    }
+
+    return { patched: toAdd, alreadyDenied };
+  }
+
   // --- Background service: connect to MCP servers and serve GUI ---
   api.registerService({
     id: "carapace",
@@ -73,6 +120,16 @@ export default function register(api: OpenClawPluginApi) {
       await aggregator.connectAll();
       await gui.start();
       logger.info(`Control GUI at http://localhost:${config.guiPort ?? 19820}`);
+
+      // Check for bypass vulnerabilities
+      const bypasses = checkForBypasses();
+      if (bypasses.length > 0) {
+        logger.warn(
+          `⚠️  BYPASS RISK: Built-in tools [${bypasses.join(", ")}] are NOT denied. ` +
+          `Agents can use these to bypass Carapace Cedar policies. ` +
+          `Run "openclaw carapace setup" to fix this automatically.`
+        );
+      }
     },
     async stop() {
       await gui.stop();
@@ -373,6 +430,58 @@ export default function register(api: OpenClawPluginApi) {
           }
         }
       });
+
+      cmd.command("setup")
+        .description("Configure OpenClaw to route exec/fetch through Carapace (denies built-in bypass tools)")
+        .action(async () => {
+          console.log("\n🦞 Carapace Setup\n");
+
+          const bypasses = checkForBypasses();
+          if (bypasses.length === 0) {
+            console.log("  ✅ All bypass tools are already denied. No changes needed.\n");
+            return;
+          }
+
+          console.log("  Built-in tools that bypass Carapace Cedar policies:");
+          for (const tool of bypasses) {
+            console.log(`    ⚠️  ${tool} — agents can use this to skip Cedar authorization`);
+          }
+
+          console.log("\n  This will add the following to your OpenClaw config:");
+          console.log(`    tools.deny: [${bypasses.map(t => `"${t}"`).join(", ")}]`);
+          console.log("\n  After setup, agents must use carapace_exec and carapace_fetch");
+          console.log("  instead, which enforce Cedar policies on every call.\n");
+
+          const { patched, alreadyDenied } = patchConfigDenyTools();
+
+          if (alreadyDenied.length > 0) {
+            console.log(`  Already denied: ${alreadyDenied.join(", ")}`);
+          }
+          if (patched.length > 0) {
+            console.log(`  ✅ Added to tools.deny: ${patched.join(", ")}`);
+            console.log("\n  Restart the gateway for changes to take effect:");
+            console.log("    openclaw gateway restart\n");
+          } else {
+            console.log("  ✅ No changes needed.\n");
+          }
+        });
+
+      cmd.command("check")
+        .description("Check for bypass vulnerabilities (built-in tools that skip Cedar)")
+        .action(async () => {
+          console.log("\n🦞 Carapace Security Check\n");
+          const bypasses = checkForBypasses();
+          if (bypasses.length === 0) {
+            console.log("  ✅ No bypass vulnerabilities found.");
+            console.log("  All agent exec/fetch operations go through Cedar.\n");
+          } else {
+            console.log("  ⚠️  Bypass vulnerabilities found:\n");
+            for (const tool of bypasses) {
+              console.log(`    🔓 ${tool} — agents can bypass Cedar policies via this tool`);
+            }
+            console.log(`\n  Run "openclaw carapace setup" to fix.\n`);
+          }
+        });
     },
     { commands: ["carapace"] },
   );

@@ -2,11 +2,34 @@
 
 Real-world Cedar policies for common "oh no" scenarios. These are starting points — adapt them to your agent's actual needs.
 
+## Before You Write Policies: Close the Bypass Gap
+
+**This is the most important step.** If you skip it, every policy in this document is advisory — the agent can just use OpenClaw's built-in `exec` tool instead of `carapace_exec` and bypass Cedar entirely.
+
+```bash
+openclaw carapace setup
+openclaw gateway restart
+```
+
+This denies the built-in `exec`, `web_fetch`, and `web_search` tools, forcing agents to use the Cedar-gated `carapace_exec` and `carapace_fetch` instead. Verify with:
+
+```bash
+openclaw carapace check
+# Should show: ✅ No bypass vulnerabilities found.
+```
+
+**Without this, an agent can:**
+- Call `exec` directly with `rm -rf /` — Carapace never sees it
+- Call `web_fetch` to exfiltrate data — Carapace never sees it
+- Call `exec` with `curl` to hit any API — Carapace never sees it
+
+Run setup first. Then write policies.
+
 ## The Basics
 
 Carapace defaults to **allow-all** so installing it never breaks anything. The recommended path:
 
-1. **Install** → everything works, you can see what your agent does
+1. **Run `carapace setup`** → close the bypass gap
 2. **Add forbids** → block the scary stuff (this doc)
 3. **Switch to deny-all** → explicitly permit only what's needed (advanced)
 
