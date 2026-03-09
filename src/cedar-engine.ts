@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
-import type { Logger, AuthzRequest, CedarDecision, VerifyResult } from "./types.js";
+import type { Logger, AuthzRequest, CedarDecision, VerifyResult, CedarSchemaInfo, SchemaEntity, SchemaAttribute, SchemaAction } from "./types.js";
 
 interface CedarEngineOpts {
   policyDir: string;
@@ -224,6 +224,121 @@ export class CedarEngine {
       effect: p.effect,
       raw: p.raw,
     }));
+  }
+
+  /** Save or update a policy by id */
+  savePolicy(id: string, raw: string): void {
+    const effect = raw.trimStart().startsWith("forbid") ? "forbid" as const : "permit" as const;
+    const principalMatch = raw.match(/principal\s*==\s*([^\s,)]+)/);
+    const actionMatch = raw.match(/action\s*==\s*([^\s,)]+)/);
+    const resourceMatch = raw.match(/resource\s*==\s*([^\s,)]+)/);
+
+    this.writePolicy(id, raw);
+    this.policies.set(id, {
+      id,
+      effect,
+      principal: principalMatch?.[1],
+      action: actionMatch?.[1],
+      resource: resourceMatch?.[1],
+      raw,
+    });
+    this.logger.info(`Saved policy: ${id}`);
+    if (this.shouldVerify) this.verify().catch(() => {});
+  }
+
+  /** Delete a policy by id */
+  deletePolicy(id: string): boolean {
+    if (!this.policies.has(id)) return false;
+    this.removePolicy(id);
+    this.logger.info(`Deleted policy: ${id}`);
+    return true;
+  }
+
+  /** Get the parsed Cedar schema for the policy builder GUI */
+  getSchema(): CedarSchemaInfo {
+    if (!existsSync(this.schemaPath)) {
+      return { entities: [], actions: [], raw: "" };
+    }
+    const raw = readFileSync(this.schemaPath, "utf-8");
+    return {
+      ...this.parseSchemaForGui(raw),
+      raw,
+    };
+  }
+
+  /** Update the schema from the GUI */
+  saveSchema(raw: string): void {
+    writeFileSync(this.schemaPath, raw, "utf-8");
+    this.logger.info("Schema updated");
+  }
+
+  /**
+   * Regenerate schema from discovered MCP tools.
+   * Creates entity types for each server and tool entries.
+   */
+  regenerateSchema(tools: Array<{ qualifiedName: string; server: string; name: string; inputSchema?: any }>): void {
+    const servers = new Set(tools.map(t => t.server));
+    const toolNames = tools.map(t => `"${t.qualifiedName}"`);
+
+    let schema = `namespace McpProxy {\n`;
+    schema += `  entity Agent;\n`;
+    schema += `  entity Server;\n`;
+    schema += `  entity Tool in [Server] {\n`;
+    schema += `    server: String,\n`;
+    schema += `    name: String\n`;
+    schema += `  };\n\n`;
+
+    schema += `  action "call_tool" appliesTo {\n`;
+    schema += `    principal: Agent,\n`;
+    schema += `    resource: Tool,\n`;
+    schema += `    context: {\n`;
+    schema += `      arguments?: Record\n`;
+    schema += `    }\n`;
+    schema += `  };\n\n`;
+
+    schema += `  action "list_tools" appliesTo {\n`;
+    schema += `    principal: Agent,\n`;
+    schema += `    resource: Tool\n`;
+    schema += `  };\n`;
+    schema += `}\n`;
+
+    writeFileSync(this.schemaPath, schema, "utf-8");
+    this.logger.info(`Schema regenerated with ${tools.length} tools from ${servers.size} servers`);
+  }
+
+  private parseSchemaForGui(raw: string): { entities: SchemaEntity[]; actions: SchemaAction[] } {
+    const entities: SchemaEntity[] = [];
+    const actions: SchemaAction[] = [];
+
+    // Parse entity declarations
+    const entityRe = /entity\s+(\w+)(?:\s+in\s+\[([^\]]+)\])?\s*(?:\{([^}]*)\})?/g;
+    let m;
+    while ((m = entityRe.exec(raw)) !== null) {
+      const attrs: SchemaAttribute[] = [];
+      if (m[3]) {
+        const attrRe = /(\w+)\??:\s*(\w+)/g;
+        let am;
+        while ((am = attrRe.exec(m[3])) !== null) {
+          attrs.push({ name: am[1], type: am[2], optional: m[3].includes(am[1] + "?") });
+        }
+      }
+      entities.push({ name: m[1], parents: m[2]?.split(",").map(s => s.trim()) ?? [], attributes: attrs });
+    }
+
+    // Parse action declarations
+    const actionRe = /action\s+"([^"]+)"\s+appliesTo\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g;
+    while ((m = actionRe.exec(raw)) !== null) {
+      const body = m[2];
+      const principalMatch = body.match(/principal:\s*(\w+)/);
+      const resourceMatch = body.match(/resource:\s*(\w+)/);
+      actions.push({
+        name: m[1],
+        principalTypes: principalMatch ? [principalMatch[1]] : [],
+        resourceTypes: resourceMatch ? [resourceMatch[1]] : [],
+      });
+    }
+
+    return { entities, actions };
   }
 
   // --- Private ---

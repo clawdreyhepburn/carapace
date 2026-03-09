@@ -74,3 +74,27 @@ export interface VerifyResult {
   issues: string[];
   durationMs: number;
 }
+
+export interface CedarSchemaInfo {
+  entities: SchemaEntity[];
+  actions: SchemaAction[];
+  raw: string;
+}
+
+export interface SchemaEntity {
+  name: string;
+  parents: string[];
+  attributes: SchemaAttribute[];
+}
+
+export interface SchemaAttribute {
+  name: string;
+  type: string;
+  optional: boolean;
+}
+
+export interface SchemaAction {
+  name: string;
+  principalTypes: string[];
+  resourceTypes: string[];
+}

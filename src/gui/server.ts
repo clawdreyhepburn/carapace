@@ -100,6 +100,40 @@ export class ControlGui {
         return;
       }
 
+      if (url.pathname === "/api/policy" && req.method === "POST") {
+        const body = await this.readBody(req);
+        const { id, raw } = JSON.parse(body);
+        if (!id || !raw) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "id and raw are required" }));
+          return;
+        }
+        this.cedar.savePolicy(id, raw);
+        this.json(res, { ok: true, id });
+        return;
+      }
+
+      if (url.pathname === "/api/policy" && req.method === "DELETE") {
+        const body = await this.readBody(req);
+        const { id } = JSON.parse(body);
+        const deleted = this.cedar.deletePolicy(id);
+        this.json(res, { ok: deleted, id });
+        return;
+      }
+
+      if (url.pathname === "/api/schema" && req.method === "GET") {
+        this.json(res, this.cedar.getSchema());
+        return;
+      }
+
+      if (url.pathname === "/api/schema" && req.method === "POST") {
+        const body = await this.readBody(req);
+        const { raw } = JSON.parse(body);
+        this.cedar.saveSchema(raw);
+        this.json(res, { ok: true });
+        return;
+      }
+
       // --- GUI ---
       if (url.pathname === "/" || url.pathname === "/index.html") {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
