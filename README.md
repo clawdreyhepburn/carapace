@@ -27,22 +27,22 @@ Carapace is an [OpenClaw](https://github.com/openclaw/openclaw) plugin that sits
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────────────┐     ┌─────────────────┐
-│  OpenClaw   │────▶│       Carapace            │────▶│  MCP Server A   │
-│  Agent      │     │                           │     │  (filesystem)   │
-│             │     │  ┌─────────────────────┐  │     ├─────────────────┤
-│             │     │  │  Cedarling WASM      │  │────▶│  MCP Server B   │
-│             │     │  │  (Cedar 4.4.2)       │  │     │  (GitHub)       │
-│             │     │  └─────────────────────┘  │     ├─────────────────┤
-│             │     │  ┌─────────────────────┐  │────▶│  MCP Server C   │
-│             │     │  │  Local Control GUI   │  │     │  (database)     │
-│             │     │  └─────────────────────┘  │     └─────────────────┘
-└─────────────┘     └──────────────────────────┘
-                               ▲
-                         ┌─────┴─────┐
-                         │  Human    │
-                         │  (browser)│
-                         └───────────┘
+┌─────────────┐     ┌────────────────────────────┐     ┌─────────────────┐
+│             │     │         Carapace            │     │  MCP Server A   │
+│  OpenClaw   │────▶│                            ├────▶│  (filesystem)   │
+│  Agent      │     │  ┌──────────────────────┐  │     ├─────────────────┤
+│             │     │  │    Cedarling WASM     │  │     │  MCP Server B   │
+│             │     │  │    (Cedar 4.4.2)      │  ├────▶│  (GitHub)       │
+│             │     │  └──────────────────────┘  │     ├─────────────────┤
+│             │     │  ┌──────────────────────┐  │     │  MCP Server C   │
+│             │     │  │   Local Control GUI   │  ├────▶│  (database)     │
+│             │     │  └──────────────────────┘  │     └─────────────────┘
+└─────────────┘     └──────────────┬─────────────┘
+                                   │
+                             ┌─────┴─────┐
+                             │   Human   │
+                             │ (browser) │
+                             └───────────┘
 ```
 
 **Every tool call flows through Cedar evaluation.** If the policy says deny, the call never reaches the upstream MCP server. The agent gets a clear denial message with the reason.
