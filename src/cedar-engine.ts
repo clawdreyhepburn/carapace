@@ -5,7 +5,7 @@
  * and optionally verifies policies with cvc5.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -385,7 +385,6 @@ export class CedarEngine {
   private removePolicy(id: string): void {
     const path = join(this.policyDir, `${id}.cedar`);
     if (existsSync(path)) {
-      const { unlinkSync } = require("node:fs");
       unlinkSync(path);
     }
     this.policies.delete(id);
