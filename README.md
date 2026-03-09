@@ -24,6 +24,16 @@ Carapace is an [OpenClaw](https://github.com/openclaw/openclaw) plugin that sits
 
 **The solution:** Carapace puts Cedar between your agent and its tools. Cedar policies are declarative, auditable, and formally verifiable. The local GUI makes it accessible to humans who don't want to write policy files by hand. Toggle a switch, and the Cedar policy updates. It's that simple.
 
+## Design Philosophy
+
+**Installing Carapace should never break your agent.** The default policy is `allow-all` — every tool works exactly as before. Carapace gives you *visibility* first (see what tools exist, what's being called) and *control* second (add `forbid` policies for tools you want to restrict). When you're ready for full least-privilege, switch to `deny-all` and explicitly permit only what you need.
+
+The progression:
+1. **Install** → everything works, you can see all tools in the GUI
+2. **Observe** → watch what your agent uses, understand the tool landscape
+3. **Restrict** → forbid dangerous tools (write, execute) you don't want
+4. **Lock down** → switch to `deny-all` for full least-privilege (optional)
+
 ## Architecture
 
 ```
@@ -118,7 +128,7 @@ In your OpenClaw config, add the servers you want Carapace to manage:
         enabled: true,
         config: {
           guiPort: 19820,
-          defaultPolicy: "deny-all",
+          defaultPolicy: "allow-all",
           servers: {
             "filesystem": {
               transport: "stdio",
@@ -189,7 +199,7 @@ Carapace uses [Cedarling](https://github.com/JanssenProject/jans/tree/main/jans-
 
 - **Real Cedar evaluation** — not a simplified subset. Full Cedar 4.4.2 with the official Rust SDK.
 - **Forbid always wins** — if any policy says `forbid`, the request is denied regardless of any `permit` policies. This is core Cedar semantics and prevents privilege escalation.
-- **Default deny** — if no policy matches a request, it's denied. You must explicitly permit access.
+- **Allow-all by default** — installing Carapace doesn't break anything. All tools work until you add `forbid` policies. Switch to `deny-all` when you're ready for least-privilege.
 - **Sub-millisecond evaluation** — WASM runs at near-native speed. Typical authorization decisions take <6ms.
 
 ### Policy Store Format
@@ -231,7 +241,7 @@ The GUI communicates with Carapace through a local REST API:
 
 Carapace is designed to protect against:
 
-1. **Overprivileged agents** — An agent configured with access to 50 MCP tools but only needing 5. Carapace enforces least-privilege by default-denying everything and requiring explicit permits.
+1. **Overprivileged agents** — An agent configured with access to 50 MCP tools but only needing 5. Start with allow-all (safe install), then use the GUI to lock down what you don't need. Switch to `deny-all` for full least-privilege.
 
 2. **Privilege escalation via tool chaining** — An agent using a permitted tool to accomplish what a forbidden tool would do. Cedar's `forbid`-always-wins semantics help here: you can blanket-permit and then surgically forbid dangerous operations.
 
@@ -270,7 +280,7 @@ The Cedar schema defines what entity types and actions exist. A modified schema 
 | `guiPort` | number | `19820` | Port for the local control GUI |
 | `servers` | object | `{}` | Upstream MCP servers (see [Quick Start](#quick-start)) |
 | `policyDir` | string | `~/.openclaw/mcp-policies/` | Directory for Cedar policy files |
-| `defaultPolicy` | `"deny-all"` \| `"allow-all"` | `"deny-all"` | Default policy for newly discovered tools |
+| `defaultPolicy` | `"deny-all"` \| `"allow-all"` | `"allow-all"` | Default policy for tools. `allow-all` keeps everything working on install — use the GUI to restrict. `deny-all` requires explicit permits. |
 | `verify` | boolean | `false` | Run verification on policy changes |
 
 ### Server Configuration

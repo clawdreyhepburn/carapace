@@ -38,8 +38,8 @@
       "defaultPolicy": {
         "type": "string",
         "enum": ["deny-all", "allow-all"],
-        "default": "deny-all",
-        "description": "Default policy for newly discovered tools"
+        "default": "allow-all",
+        "description": "Default policy for tools. allow-all (default) keeps everything working — use the GUI to restrict. deny-all requires explicit permits."
       },
       "verify": {
         "type": "boolean",

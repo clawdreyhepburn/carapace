@@ -46,7 +46,7 @@ export default function register(api: OpenClawPluginApi) {
 
   const cedar = new CedarlingEngine({
     policyDir: config.policyDir ?? "~/.openclaw/mcp-policies/",
-    defaultPolicy: config.defaultPolicy ?? "deny-all",
+    defaultPolicy: config.defaultPolicy ?? "allow-all",
     verify: config.verify ?? false,
     logger,
   });
