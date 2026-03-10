@@ -2,7 +2,7 @@
   "id": "carapace",
   "name": "Carapace",
   "description": "Immutable policy boundaries for MCP tool access. Your agent's exoskeleton.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -45,6 +45,31 @@
         "type": "boolean",
         "default": false,
         "description": "Run cvc5 formal verification on policy changes"
+      },
+      "proxy": {
+        "type": "object",
+        "description": "LLM proxy settings — intercepts tool_use blocks and enforces Cedar policies before OpenClaw sees them",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable the LLM API proxy"
+          },
+          "port": {
+            "type": "number",
+            "default": 19821,
+            "description": "Port for the LLM proxy server"
+          },
+          "upstream": {
+            "type": "string",
+            "default": "https://api.anthropic.com",
+            "description": "Upstream LLM API base URL"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "API key for the upstream provider (moved here so the agent never sees it)"
+          }
+        }
       }
     }
   },
@@ -52,6 +77,10 @@
     "guiPort": { "label": "GUI Port", "placeholder": "19820" },
     "policyDir": { "label": "Policy Directory" },
     "defaultPolicy": { "label": "Default Policy for New Tools" },
-    "verify": { "label": "Enable Formal Verification" }
+    "verify": { "label": "Enable Formal Verification" },
+    "proxy.enabled": { "label": "Enable LLM Proxy" },
+    "proxy.port": { "label": "Proxy Port", "placeholder": "19821" },
+    "proxy.upstream": { "label": "Upstream API URL" },
+    "proxy.apiKey": { "label": "Upstream API Key", "sensitive": true }
   }
 }
