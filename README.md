@@ -336,6 +336,27 @@ openclaw carapace check
 
 Go to [http://localhost:19820](http://localhost:19820) to see your tools, manage policies, and control access.
 
+### Uninstalling
+
+Carapace modifies your OpenClaw config during setup (denying built-in tools, adding proxy baseUrl overrides). The uninstall command reverses all of it:
+
+```bash
+openclaw carapace uninstall
+openclaw gateway restart
+```
+
+This will:
+- Restore the built-in `exec`, `web_fetch`, and `web_search` tools (removes them from `tools.deny`)
+- Remove the proxy baseUrl override so your provider connects directly to its API again
+- Disable the Carapace plugin in config
+- Remind you to move your API key back to your environment if it's still in the Carapace config
+
+To fully remove the plugin files:
+
+```bash
+rm -rf ~/.openclaw/extensions/carapace
+```
+
 ### For development
 
 ```bash

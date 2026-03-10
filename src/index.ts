@@ -503,6 +503,87 @@ export default function register(api: OpenClawPluginApi) {
           }
         });
 
+      cmd.command("uninstall")
+        .description("Reverse all config changes made by Carapace (restores built-in tools)")
+        .action(async () => {
+          console.log("\n🦞 Carapace Uninstall\n");
+          console.log("  This reverses changes made by 'openclaw carapace setup'.\n");
+
+          try {
+            const { readFileSync, writeFileSync, existsSync } = require("node:fs");
+            const { join } = require("node:path");
+            const { homedir } = require("node:os");
+            const configPath = join(homedir(), ".openclaw", "openclaw.json");
+
+            if (!existsSync(configPath)) {
+              console.log("  No config file found. Nothing to undo.\n");
+              return;
+            }
+
+            const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+            let changed = false;
+
+            // Remove Carapace-added entries from tools.deny
+            if (cfg.tools?.deny) {
+              const before = cfg.tools.deny.length;
+              cfg.tools.deny = cfg.tools.deny.filter((t: string) => !BYPASS_TOOLS.includes(t));
+              if (cfg.tools.deny.length === 0) delete cfg.tools.deny;
+              if (cfg.tools && Object.keys(cfg.tools).length === 0) delete cfg.tools;
+              if (cfg.tools?.deny?.length !== before) {
+                changed = true;
+                console.log(`  ✅ Removed [${BYPASS_TOOLS.join(", ")}] from tools.deny`);
+                console.log("     Built-in exec, web_fetch, and web_search are restored.");
+              }
+            }
+
+            // Remove models.providers baseUrl override if it points at the proxy
+            const proxyPort = cfg.plugins?.entries?.carapace?.config?.proxy?.port ?? 19821;
+            const proxyUrl = `http://127.0.0.1:${proxyPort}`;
+            if (cfg.models?.providers) {
+              for (const [name, provCfg] of Object.entries(cfg.models.providers)) {
+                if ((provCfg as any)?.baseUrl === proxyUrl) {
+                  delete (provCfg as any).baseUrl;
+                  // Clean up empty objects
+                  if (Object.keys(provCfg as any).length === 0) delete cfg.models.providers[name];
+                  changed = true;
+                  console.log(`  ✅ Removed baseUrl proxy override for ${name}`);
+                  console.log(`     ${name} will connect directly to its API again.`);
+                }
+              }
+              if (Object.keys(cfg.models.providers).length === 0) delete cfg.models.providers;
+              if (cfg.models && Object.keys(cfg.models).length === 0) delete cfg.models;
+            }
+
+            // Disable the plugin entry (don't delete — user might want to re-enable)
+            if (cfg.plugins?.entries?.carapace?.enabled) {
+              cfg.plugins.entries.carapace.enabled = false;
+              changed = true;
+              console.log("  ✅ Disabled carapace plugin in config");
+            }
+
+            if (changed) {
+              writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+              console.log("\n  Config updated. Restart the gateway for changes to take effect:");
+              console.log("    openclaw gateway restart\n");
+              console.log("  To fully remove the plugin files:");
+              console.log("    rm -rf ~/.openclaw/extensions/carapace\n");
+            } else {
+              console.log("  No Carapace changes found in config. Nothing to undo.\n");
+            }
+
+            // Warn about API key
+            const apiKey = cfg.plugins?.entries?.carapace?.config?.proxy?.upstream?.anthropic?.apiKey
+              ?? cfg.plugins?.entries?.carapace?.config?.proxy?.upstream?.openai?.apiKey;
+            if (apiKey && apiKey.startsWith("sk-")) {
+              console.log("  ⚠️  Your API key is still in the Carapace plugin config.");
+              console.log("     Move it back to your environment or OpenClaw auth config:");
+              console.log('     export ANTHROPIC_API_KEY="your-key-here"\n');
+            }
+          } catch (err: any) {
+            console.log(`  ❌ Error: ${err.message}\n`);
+          }
+        });
+
       cmd.command("check")
         .description("Check for bypass vulnerabilities (built-in tools that skip Cedar)")
         .action(async () => {
