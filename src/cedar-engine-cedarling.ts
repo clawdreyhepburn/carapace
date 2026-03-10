@@ -276,6 +276,10 @@ export class CedarlingEngine {
     return true;
   }
 
+  getDefaultPolicy(): "deny-all" | "allow-all" {
+    return this.defaultPolicy;
+  }
+
   getPolicies(): Array<{ id: string; effect: string; raw: string }> {
     return [...this.policies.entries()].map(([id, p]) => ({ id, ...p }));
   }

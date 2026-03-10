@@ -105,6 +105,7 @@ export interface CedarEngineInterface {
   isToolEnabled(qualifiedName: string): boolean;
   savePolicy(id: string, raw: string): void;
   deletePolicy(id: string): boolean;
+  getDefaultPolicy(): "deny-all" | "allow-all";
   getPolicies(): Array<{ id: string; effect: string; raw: string }>;
   getSchema(): CedarSchemaInfo;
   saveSchema(raw: string): void;

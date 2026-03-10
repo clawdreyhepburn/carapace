@@ -218,6 +218,10 @@ export class CedarEngine {
   }
 
   /** Get all policies as raw text */
+  getDefaultPolicy(): "deny-all" | "allow-all" {
+    return this.defaultPolicy;
+  }
+
   getPolicies(): Array<{ id: string; effect: string; raw: string }> {
     return [...this.policies.values()].map((p) => ({
       id: p.id,

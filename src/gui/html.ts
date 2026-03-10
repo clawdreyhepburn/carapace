@@ -341,7 +341,7 @@ export function guiHtml(): string {
 
   <div class="container">
     <div id="servers-section">
-      <h2>Servers</h2>
+      <h2>MCP Servers</h2>
       <div class="servers" id="servers"></div>
     </div>
 
@@ -540,8 +540,18 @@ export function guiHtml(): string {
     }
 
     function renderServers() {
+      const section = document.getElementById('servers-section');
       const el = document.getElementById('servers');
       const serverFilter = document.getElementById('server-filter');
+      const serverNames = Object.keys(state.servers);
+
+      // Hide entire section when no MCP servers are configured
+      if (serverNames.length === 0) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+
       el.innerHTML = Object.entries(state.servers).map(([name, s]) =>
         '<div class="server-card"><div class="name">' +
         '<span class="dot ' + (s.connected ? 'connected' : 'disconnected') + '"></span>' +
@@ -552,7 +562,7 @@ export function guiHtml(): string {
       // Update server filter dropdown (preserve selection)
       const prev = serverFilter.value;
       serverFilter.innerHTML = '<option value="all">All servers</option>' +
-        Object.keys(state.servers).map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+        serverNames.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
       serverFilter.value = prev || 'all';
     }
 
@@ -665,7 +675,8 @@ export function guiHtml(): string {
       const el = document.getElementById('policies-list');
       const policies = state.policies ?? [];
       if (policies.length === 0) {
-        el.innerHTML = '<div class="empty-state">No policies loaded. Default deny is active.<br><br>' +
+        const mode = state.defaultPolicy === 'deny-all' ? 'Default deny is active — all tools are blocked.' : 'Default allow is active — all tools are permitted.';
+        el.innerHTML = '<div class="empty-state">No policies loaded. ' + mode + '<br><br>' +
           '<button class="primary" onclick="openBuilder()">+ Create your first policy</button></div>';
         return;
       }

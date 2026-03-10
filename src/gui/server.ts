@@ -66,6 +66,7 @@ export class ControlGui {
           policies: this.cedar.getPolicies(),
           toolCount: tools.length,
           enabledCount: tools.filter((t) => t.enabled).length,
+          defaultPolicy: this.cedar.getDefaultPolicy?.() ?? "allow-all",
         });
         return;
       }
