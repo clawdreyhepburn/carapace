@@ -246,7 +246,7 @@ Add these sections to your `~/.openclaw/openclaw.json`:
 
 This tells OpenClaw to send Anthropic API requests to Carapace's local proxy instead of directly to `api.anthropic.com`. Carapace forwards them with the real API key (from the plugin config), then filters the responses.
 
-**3. (Optional, recommended) Remove your API key from the environment.** The proxy works even if `ANTHROPIC_API_KEY` is still set — it replaces the auth header when forwarding. But if the agent can read environment variables (e.g., via `printenv`), it could see the key. For best security, move the key into the Carapace plugin config and unset `ANTHROPIC_API_KEY`.
+Your existing `ANTHROPIC_API_KEY` environment variable still works — the proxy replaces the auth header when forwarding to Anthropic, so there's no conflict. You don't need to move any keys around.
 
 For **OpenAI** models, use `"openai"` in the upstream config and override the OpenAI provider:
 
@@ -349,7 +349,6 @@ This will:
 - Restore the built-in `exec`, `web_fetch`, and `web_search` tools (removes them from `tools.deny`)
 - Remove the proxy baseUrl override so your provider connects directly to its API again
 - Disable the Carapace plugin in config
-- Remind you to move your API key back to your environment if it's still in the Carapace config
 
 To fully remove the plugin files:
 

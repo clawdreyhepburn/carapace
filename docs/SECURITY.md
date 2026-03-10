@@ -63,32 +63,11 @@ Add these sections to your OpenClaw config (`~/.openclaw/openclaw.json`):
 
 For OpenAI models, use `"openai"` in both the upstream and models config.
 
-### Move your API key
+### API keys
 
-The real API key should **only** exist in the Carapace plugin config. Remove it from everywhere else so OpenClaw can't bypass the proxy.
+Your existing `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable still works — the proxy replaces the auth header when forwarding, so there's no conflict. You don't need to move any keys around.
 
-**macOS / Linux:**
-
-```bash
-# Check for API keys in the config
-grep -n "sk-ant\|sk-" ~/.openclaw/openclaw.json
-
-# Also check environment variables
-echo $ANTHROPIC_API_KEY
-# If set, unset it: unset ANTHROPIC_API_KEY
-
-# Check .env file
-cat ~/.openclaw/.env 2>/dev/null | grep -i "anthropic\|openai"
-```
-
-**Windows (PowerShell):**
-
-```powershell
-Select-String -Path "$env:USERPROFILE\.openclaw\openclaw.json" -Pattern "sk-ant|sk-"
-echo $env:ANTHROPIC_API_KEY
-```
-
-If you see your real key anywhere other than the Carapace plugin config, remove it. The key should exist in exactly one place: `plugins.entries.carapace.config.proxy.upstream`.
+If you want extra security, you can optionally move the key into the Carapace plugin config and unset the environment variable. This prevents the agent from reading the key via `printenv`. But it's not required for the proxy to work.
 
 ### Restart
 

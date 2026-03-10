@@ -571,14 +571,7 @@ export default function register(api: OpenClawPluginApi) {
               console.log("  No Carapace changes found in config. Nothing to undo.\n");
             }
 
-            // Warn about API key
-            const apiKey = cfg.plugins?.entries?.carapace?.config?.proxy?.upstream?.anthropic?.apiKey
-              ?? cfg.plugins?.entries?.carapace?.config?.proxy?.upstream?.openai?.apiKey;
-            if (apiKey && apiKey.startsWith("sk-")) {
-              console.log("  ⚠️  Your API key is still in the Carapace plugin config.");
-              console.log("     Move it back to your environment or OpenClaw auth config:");
-              console.log('     export ANTHROPIC_API_KEY="your-key-here"\n');
-            }
+
           } catch (err: any) {
             console.log(`  ❌ Error: ${err.message}\n`);
           }
