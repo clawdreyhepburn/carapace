@@ -202,65 +202,74 @@ Carapace has two modes. Pick one (or use both for defense in depth).
 
 The proxy sits between your agent and the AI model. It holds the real API key, intercepts every tool call in the AI's response, and removes anything your policies don't allow. **The agent can't bypass this because it never has the real API key.**
 
-Add this to `~/.openclaw/openclaw.json`:
+Add these sections to your `~/.openclaw/openclaw.json`:
+
+**1. Add the Carapace plugin** (under `plugins.entries`):
 
 ```json
-{
-  "plugins": {
-    "entries": {
-      "carapace": {
-        "enabled": true,
-        "config": {
-          "guiPort": 19820,
-          "defaultPolicy": "allow-all",
-          "proxy": {
-            "enabled": true,
-            "port": 19821,
-            "upstream": {
-              "anthropic": {
-                "apiKey": "sk-ant-your-real-api-key-here"
-              }
-            }
-          },
-          "servers": {
-            "filesystem": {
-              "transport": "stdio",
-              "command": "npx",
-              "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
-            }
-          }
+"carapace": {
+  "enabled": true,
+  "config": {
+    "guiPort": 19820,
+    "defaultPolicy": "allow-all",
+    "proxy": {
+      "enabled": true,
+      "port": 19821,
+      "upstream": {
+        "anthropic": {
+          "apiKey": "sk-ant-your-real-api-key-here"
         }
       }
+    },
+    "servers": {
+      "filesystem": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+      }
     }
-  },
+  }
+}
+```
+
+**2. Point Anthropic at the proxy** (under `models.providers`):
+
+```json
+"models": {
   "providers": {
     "anthropic": {
-      "apiKey": "not-a-real-key",
       "baseUrl": "http://127.0.0.1:19821"
     }
   }
 }
 ```
 
-The `apiKey` in the `providers` section can be literally any string — it's a placeholder. The proxy doesn't check it. Your real API key lives only in the Carapace plugin config.
+This tells OpenClaw to send Anthropic API requests to Carapace's local proxy instead of directly to `api.anthropic.com`. Carapace forwards them with the real API key (from the plugin config), then filters the responses.
 
-For **OpenAI** models, replace the `upstream` block:
+**3. Remove your API key from the environment** — make sure `ANTHROPIC_API_KEY` is not set in your shell or in `~/.openclaw/.env`. The real key should only exist in the Carapace plugin config. If OpenClaw has the real key, it could bypass the proxy.
+
+For **OpenAI** models, use `"openai"` in the upstream config and override the OpenAI provider:
 
 ```json
-"upstream": {
-  "openai": {
-    "apiKey": "sk-your-real-openai-key-here"
+"carapace": {
+  "config": {
+    "proxy": {
+      "upstream": {
+        "openai": {
+          "apiKey": "sk-your-real-openai-key-here"
+        }
+      }
+    }
   }
 }
 ```
 
-And point the OpenAI provider at the proxy:
-
 ```json
-"providers": {
-  "openai": {
-    "apiKey": "dummy-key",
-    "baseUrl": "http://127.0.0.1:19821"
+"models": {
+  "providers": {
+    "openai": {
+      "baseUrl": "http://127.0.0.1:19821"
+    }
   }
 }
 ```

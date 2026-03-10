@@ -28,71 +28,67 @@ The LLM Proxy is the strongest enforcement mode. Carapace holds the real API key
 
 ### Configuration
 
-Add this to your OpenClaw config (`~/.openclaw/openclaw.json`):
+Add these sections to your OpenClaw config (`~/.openclaw/openclaw.json`):
+
+**1. Add the Carapace plugin** (merge into your existing `plugins.entries`):
 
 ```json
-{
-  "plugins": {
-    "entries": {
-      "carapace": {
-        "enabled": true,
-        "config": {
-          "proxy": {
-            "enabled": true,
-            "port": 19821,
-            "upstream": {
-              "anthropic": {
-                "apiKey": "sk-ant-your-real-api-key-here"
-              }
-            }
-          }
+"carapace": {
+  "enabled": true,
+  "config": {
+    "proxy": {
+      "enabled": true,
+      "port": 19821,
+      "upstream": {
+        "anthropic": {
+          "apiKey": "sk-ant-your-real-api-key-here"
         }
       }
     }
-  },
+  }
+}
+```
+
+**2. Point Anthropic at the proxy** (add a `models` section at the top level):
+
+```json
+"models": {
   "providers": {
     "anthropic": {
-      "apiKey": "carapace-proxy-token",
       "baseUrl": "http://127.0.0.1:19821"
     }
   }
 }
 ```
 
-For OpenAI models, replace the `upstream` block:
-
-```json
-{
-  "proxy": {
-    "enabled": true,
-    "port": 19821,
-    "upstream": {
-      "openai": {
-        "apiKey": "sk-your-real-openai-key-here"
-      }
-    }
-  }
-}
-```
+For OpenAI models, use `"openai"` in both the upstream and models config.
 
 ### Move your API key
 
-The real API key should **only** exist in the Carapace plugin config, not in the main provider config. OpenClaw gets a dummy key and points at the local proxy.
+The real API key should **only** exist in the Carapace plugin config. Remove it from everywhere else so OpenClaw can't bypass the proxy.
 
 **macOS / Linux:**
 
 ```bash
-# Verify the key is only in the plugin config, not the provider config
+# Check for API keys in the config
 grep -n "sk-ant\|sk-" ~/.openclaw/openclaw.json
+
+# Also check environment variables
+echo $ANTHROPIC_API_KEY
+# If set, unset it: unset ANTHROPIC_API_KEY
+
+# Check .env file
+cat ~/.openclaw/.env 2>/dev/null | grep -i "anthropic\|openai"
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
 Select-String -Path "$env:USERPROFILE\.openclaw\openclaw.json" -Pattern "sk-ant|sk-"
+echo $env:ANTHROPIC_API_KEY
 ```
 
-If you see your real key in `providers.anthropic.apiKey`, replace it with a dummy value like `"carapace-proxy-token"`.
+If you see your real key anywhere other than the Carapace plugin config, remove it. The key should exist in exactly one place: `plugins.entries.carapace.config.proxy.upstream`.
 
 ### Restart
 
