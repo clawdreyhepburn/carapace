@@ -28,9 +28,7 @@ The LLM Proxy is the strongest enforcement mode. Carapace holds the real API key
 
 ### Configuration
 
-Add these sections to your OpenClaw config (`~/.openclaw/openclaw.json`):
-
-**1. Add the Carapace plugin** (merge into your existing `plugins.entries`):
+Add the Carapace plugin to your OpenClaw config (`~/.openclaw/openclaw.json`), under `plugins.entries`:
 
 ```json
 "carapace": {
@@ -49,31 +47,20 @@ Add these sections to your OpenClaw config (`~/.openclaw/openclaw.json`):
 }
 ```
 
-**2. Point Anthropic at the proxy** (add a `models` section at the top level):
+For OpenAI models, use `"openai"` instead of `"anthropic"` in the upstream block.
 
-```json
-"models": {
-  "providers": {
-    "anthropic": {
-      "baseUrl": "http://127.0.0.1:19821"
-    }
-  }
-}
+Then run setup — it automatically points your LLM provider at the proxy:
+
+```bash
+openclaw carapace setup
+openclaw gateway restart
 ```
-
-For OpenAI models, use `"openai"` in both the upstream and models config.
 
 ### API keys
 
 Your existing `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable still works — the proxy replaces the auth header when forwarding, so there's no conflict. You don't need to move any keys around.
 
 If you want extra security, you can optionally move the key into the Carapace plugin config and unset the environment variable. This prevents the agent from reading the key via `printenv`. But it's not required for the proxy to work.
-
-### Restart
-
-```bash
-openclaw gateway restart
-```
 
 ---
 
@@ -83,12 +70,21 @@ Even with the proxy, it's good defense-in-depth to deny the built-in tools that 
 
 ### Automatic setup
 
+If you already ran `openclaw carapace setup` in Step 1, this is already done — setup handles both the proxy baseUrl and the tool deny list. You can verify with:
+
+```bash
+openclaw carapace check
+# Expected: ✅ No bypass vulnerabilities found.
+```
+
+If you skipped Step 1 or want to run it again:
+
 ```bash
 openclaw carapace setup
 openclaw gateway restart
 ```
 
-This adds `exec`, `web_fetch`, and `web_search` to `tools.deny` in your config.
+This adds `exec`, `web_fetch`, and `web_search` to `tools.deny` in your config (and sets the proxy baseUrl if the proxy is enabled).
 
 ### Manual setup
 

@@ -10,7 +10,7 @@
     <a href="#quick-start">Quick Start</a> •
     <a href="docs/SECURITY.md">Security Guide</a> •
     <a href="docs/RECOMMENDED-POLICIES.md">Recommended Policies</a> •
-    <a href="#gui">Control GUI</a> •
+    <a href="#the-control-gui">Control GUI</a> •
     <a href="#attribution">Attribution</a>
   </p>
 </p>
@@ -83,7 +83,7 @@ This is the most secure setup. Here's what happens:
 4. **With Carapace**, the AI model's response goes through Carapace first. Carapace reads every tool call in the response, checks it against your Cedar policies, and **removes any tool calls that aren't allowed.**
 5. Your agent platform only sees the filtered response — it never even knows the AI tried to do something forbidden.
 
-This works because Carapace holds the real API key for the AI model. Your agent platform gets a dummy key and connects to Carapace's local proxy instead of directly to Anthropic or OpenAI. The agent can't bypass this because it doesn't have the real key.
+This works because Carapace intercepts the response before your agent platform processes it. The `setup` command automatically points your provider at Carapace's local proxy, so all LLM traffic flows through Cedar.
 
 ```
 Your agent  →  Carapace proxy (localhost)  →  Anthropic/OpenAI API
@@ -402,11 +402,12 @@ The dashboard runs on `localhost` only — it's not accessible from the network.
 ### CLI commands
 
 ```bash
+openclaw carapace setup     # Configure OpenClaw (proxy baseUrl + deny bypass tools)
+openclaw carapace check     # Check for bypass vulnerabilities
 openclaw carapace status    # Show connected servers, tool counts, proxy status
 openclaw carapace tools     # List all tools with enabled/disabled status
 openclaw carapace verify    # Validate all policies
-openclaw carapace setup     # Deny built-in bypass tools in OpenClaw config
-openclaw carapace check     # Check for bypass vulnerabilities
+openclaw carapace uninstall # Reverse all config changes, restore built-in tools
 ```
 
 ---
