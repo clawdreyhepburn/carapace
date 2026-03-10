@@ -235,12 +235,14 @@ Add this to `~/.openclaw/openclaw.json`:
   },
   "providers": {
     "anthropic": {
-      "apiKey": "dummy-key-proxy-handles-it",
+      "apiKey": "not-a-real-key",
       "baseUrl": "http://127.0.0.1:19821"
     }
   }
 }
 ```
+
+The `apiKey` in the `providers` section can be literally any string — it's a placeholder. The proxy doesn't check it. Your real API key lives only in the Carapace plugin config.
 
 For **OpenAI** models, replace the `upstream` block:
 
