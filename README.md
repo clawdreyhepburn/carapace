@@ -188,28 +188,99 @@ View and edit the Cedar schema that defines your policy types and actions.
 - [Node.js](https://nodejs.org/) 20 or later
 - [OpenClaw](https://github.com/openclaw/openclaw) installed and running
 
-### Install
+### Step 1: Install the plugin
 
 ```bash
 openclaw plugins install @clawdreyhepburn/carapace
 ```
 
-### For development
+### Step 2: Choose your enforcement mode
 
-```bash
-git clone https://github.com/clawdreyhepburn/carapace.git
-cd carapace
-npm install
-npx tsx test/harness.ts    # Starts test servers + GUI on port 19820
+Carapace has two modes. Pick one (or use both for defense in depth).
+
+#### Option A: LLM Proxy (recommended — strongest protection)
+
+The proxy sits between your agent and the AI model. It holds the real API key, intercepts every tool call in the AI's response, and removes anything your policies don't allow. **The agent can't bypass this because it never has the real API key.**
+
+Add this to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "carapace": {
+        "enabled": true,
+        "config": {
+          "guiPort": 19820,
+          "defaultPolicy": "allow-all",
+          "proxy": {
+            "enabled": true,
+            "port": 19821,
+            "upstream": {
+              "anthropic": {
+                "apiKey": "sk-ant-your-real-api-key-here"
+              }
+            }
+          },
+          "servers": {
+            "filesystem": {
+              "transport": "stdio",
+              "command": "npx",
+              "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+            }
+          }
+        }
+      }
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "apiKey": "dummy-key-proxy-handles-it",
+      "baseUrl": "http://127.0.0.1:19821"
+    }
+  }
+}
 ```
 
----
+For **OpenAI** models, replace the `upstream` block:
 
-## Quick Start
+```json
+"upstream": {
+  "openai": {
+    "apiKey": "sk-your-real-openai-key-here"
+  }
+}
+```
 
-### 1. Add your MCP servers
+And point the OpenAI provider at the proxy:
 
-Tell Carapace which tool servers your agent uses. Add this to your OpenClaw config (`~/.openclaw/openclaw.json`):
+```json
+"providers": {
+  "openai": {
+    "apiKey": "dummy-key",
+    "baseUrl": "http://127.0.0.1:19821"
+  }
+}
+```
+
+Then restart:
+
+```bash
+openclaw gateway restart
+```
+
+Verify the proxy is running:
+
+```bash
+curl http://127.0.0.1:19821/health
+# Should return: {"ok":true,"stats":{"requests":0,...}}
+```
+
+#### Option B: Tool-level gating (simpler, weaker)
+
+Carapace registers Cedar-gated tools (`carapace_exec`, `carapace_fetch`, `mcp_call`) that check policies before executing. You then block the built-in tools so the agent is forced to use Carapace's versions.
+
+Add this to `~/.openclaw/openclaw.json`:
 
 ```json
 {
@@ -234,61 +305,42 @@ Tell Carapace which tool servers your agent uses. Add this to your OpenClaw conf
 }
 ```
 
-### 2. Set up the LLM Proxy (recommended)
-
-This is the most important step for real security. Move your AI model's API key into Carapace and point your agent at the proxy:
-
-```json
-{
-  "plugins": {
-    "entries": {
-      "carapace": {
-        "enabled": true,
-        "config": {
-          "proxy": {
-            "enabled": true,
-            "port": 19821,
-            "upstream": {
-              "anthropic": { "apiKey": "sk-ant-your-real-key-here" }
-            }
-          }
-        }
-      }
-    }
-  },
-  "providers": {
-    "anthropic": {
-      "apiKey": "dummy-key-proxy-handles-it",
-      "baseUrl": "http://127.0.0.1:19821"
-    }
-  }
-}
-```
-
-**What this does:** Your agent sends requests to `localhost:19821` (Carapace) instead of directly to Anthropic. Carapace forwards them with the real API key, then filters the responses. The agent never has the real key.
-
-For OpenAI models, use `"openai"` instead of `"anthropic"` in the upstream config.
-
-### 3. (If not using the proxy) Close the bypass gap
-
-If you're using tool-level gating instead of the proxy, run:
+Then block the built-in bypass tools:
 
 ```bash
 openclaw carapace setup
 openclaw gateway restart
 ```
 
-This blocks the built-in `exec` and `web_fetch` tools so the agent must use Carapace's Cedar-gated versions instead. Check anytime with:
+Verify there are no bypasses:
 
 ```bash
 openclaw carapace check
+# Should return: ✅ No bypass vulnerabilities found.
 ```
 
-### 4. Open the dashboard
+> ⚠️ **Without running `carapace setup`, policies are advisory.** The agent can use the built-in `exec` tool to skip Cedar entirely. The LLM proxy (Option A) doesn't have this problem.
 
-Go to [http://localhost:19820](http://localhost:19820). You'll see all your tools. Toggle them on/off or create custom policies.
+### Step 3: Open the dashboard
 
-### 5. Write your first policy
+Go to [http://localhost:19820](http://localhost:19820) to see your tools, manage policies, and control access.
+
+### For development
+
+```bash
+git clone https://github.com/clawdreyhepburn/carapace.git
+cd carapace
+npm install
+npx tsx test/harness.ts    # Starts test servers + GUI on port 19820
+```
+
+---
+
+## Quick Start
+
+Once you've installed and configured Carapace (see [Installation](#installation) above), here's how to start using it.
+
+### Write your first policy
 
 Here's a common starting point — let the agent use development tools but block dangerous commands:
 
