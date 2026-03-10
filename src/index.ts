@@ -130,6 +130,46 @@ export default function register(api: OpenClawPluginApi) {
     return { patched: toAdd, alreadyDenied };
   }
 
+  function patchConfigProxyBaseUrl(): { patched: string[]; alreadySet: string[] } {
+    const { readFileSync, writeFileSync, existsSync } = require("node:fs");
+    const { join } = require("node:path");
+    const { homedir } = require("node:os");
+    const configPath = join(homedir(), ".openclaw", "openclaw.json");
+
+    if (!existsSync(configPath)) return { patched: [], alreadySet: [] };
+    const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+
+    const port = config.proxy?.port ?? 19821;
+    const proxyUrl = `http://127.0.0.1:${port}`;
+
+    // Figure out which providers have upstream keys configured
+    const providers: string[] = [];
+    if (config.proxy?.upstream?.anthropic) providers.push("anthropic");
+    if (config.proxy?.upstream?.openai) providers.push("openai");
+
+    const patched: string[] = [];
+    const alreadySet: string[] = [];
+
+    if (!cfg.models) cfg.models = {};
+    if (!cfg.models.providers) cfg.models.providers = {};
+
+    for (const provider of providers) {
+      if (!cfg.models.providers[provider]) cfg.models.providers[provider] = {};
+      if (cfg.models.providers[provider].baseUrl === proxyUrl) {
+        alreadySet.push(provider);
+      } else {
+        cfg.models.providers[provider].baseUrl = proxyUrl;
+        patched.push(provider);
+      }
+    }
+
+    if (patched.length > 0) {
+      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+    }
+
+    return { patched, alreadySet };
+  }
+
   // --- Background service: connect to MCP servers and serve GUI ---
   api.registerService({
     id: "carapace",
@@ -469,37 +509,52 @@ export default function register(api: OpenClawPluginApi) {
       });
 
       cmd.command("setup")
-        .description("Configure OpenClaw to route exec/fetch through Carapace (denies built-in bypass tools)")
+        .description("Configure OpenClaw to route all traffic through Carapace")
         .action(async () => {
           console.log("\n🦞 Carapace Setup\n");
+          let anyChanges = false;
 
+          // 1. Deny built-in bypass tools
           const bypasses = checkForBypasses();
-          if (bypasses.length === 0) {
-            console.log("  ✅ All bypass tools are already denied. No changes needed.\n");
-            return;
+          if (bypasses.length > 0) {
+            console.log("  Denying built-in tools that bypass Cedar:");
+            const { patched, alreadyDenied } = patchConfigDenyTools();
+            if (alreadyDenied.length > 0) {
+              console.log(`    Already denied: ${alreadyDenied.join(", ")}`);
+            }
+            if (patched.length > 0) {
+              console.log(`    ✅ Added to tools.deny: ${patched.join(", ")}`);
+              anyChanges = true;
+            }
+          } else {
+            console.log("  ✅ Built-in bypass tools already denied.");
           }
 
-          console.log("  Built-in tools that bypass Carapace Cedar policies:");
-          for (const tool of bypasses) {
-            console.log(`    ⚠️  ${tool} — agents can use this to skip Cedar authorization`);
+          // 2. Set up LLM proxy baseUrl if proxy is configured
+          if (config.proxy?.enabled) {
+            console.log("\n  Configuring LLM proxy baseUrl:");
+            const { patched, alreadySet } = patchConfigProxyBaseUrl();
+            if (alreadySet.length > 0) {
+              console.log(`    Already set: ${alreadySet.join(", ")}`);
+            }
+            if (patched.length > 0) {
+              console.log(`    ✅ Set models.providers baseUrl for: ${patched.join(", ")}`);
+              anyChanges = true;
+            }
+            if (patched.length === 0 && alreadySet.length === 0) {
+              console.log("    ⚠️  No upstream providers configured in proxy config.");
+              console.log("       Add proxy.upstream.anthropic or proxy.upstream.openai to your plugin config.");
+            }
+          } else {
+            console.log("\n  LLM proxy not enabled — skipping baseUrl setup.");
+            console.log("  To enable, add proxy.enabled: true to your Carapace plugin config.");
           }
 
-          console.log("\n  This will add the following to your OpenClaw config:");
-          console.log(`    tools.deny: [${bypasses.map(t => `"${t}"`).join(", ")}]`);
-          console.log("\n  After setup, agents must use carapace_exec and carapace_fetch");
-          console.log("  instead, which enforce Cedar policies on every call.\n");
-
-          const { patched, alreadyDenied } = patchConfigDenyTools();
-
-          if (alreadyDenied.length > 0) {
-            console.log(`  Already denied: ${alreadyDenied.join(", ")}`);
-          }
-          if (patched.length > 0) {
-            console.log(`  ✅ Added to tools.deny: ${patched.join(", ")}`);
+          if (anyChanges) {
             console.log("\n  Restart the gateway for changes to take effect:");
             console.log("    openclaw gateway restart\n");
           } else {
-            console.log("  ✅ No changes needed.\n");
+            console.log("\n  ✅ Everything already configured. No changes needed.\n");
           }
         });
 

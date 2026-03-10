@@ -232,105 +232,43 @@ Add these sections to your `~/.openclaw/openclaw.json`:
 }
 ```
 
-**2. Point Anthropic at the proxy** (under `models.providers`):
+For **OpenAI** models, use `"openai"` instead of `"anthropic"` in the upstream block.
 
-```json
-"models": {
-  "providers": {
-    "anthropic": {
-      "baseUrl": "http://127.0.0.1:19821"
-    }
-  }
-}
-```
-
-This tells OpenClaw to send Anthropic API requests to Carapace's local proxy instead of directly to `api.anthropic.com`. Carapace forwards them with the real API key (from the plugin config), then filters the responses.
-
-Your existing `ANTHROPIC_API_KEY` environment variable still works — the proxy replaces the auth header when forwarding to Anthropic, so there's no conflict. You don't need to move any keys around.
-
-For **OpenAI** models, use `"openai"` in the upstream config and override the OpenAI provider:
-
-```json
-"carapace": {
-  "config": {
-    "proxy": {
-      "upstream": {
-        "openai": {
-          "apiKey": "sk-your-real-openai-key-here"
-        }
-      }
-    }
-  }
-}
-```
-
-```json
-"models": {
-  "providers": {
-    "openai": {
-      "baseUrl": "http://127.0.0.1:19821"
-    }
-  }
-}
-```
-
-Then restart:
-
-```bash
-openclaw gateway restart
-```
-
-Verify the proxy is running:
-
-```bash
-curl http://127.0.0.1:19821/health
-# Should return: {"ok":true,"stats":{"requests":0,...}}
-```
-
-#### Option B: Tool-level gating (simpler, weaker)
-
-Carapace registers Cedar-gated tools (`carapace_exec`, `carapace_fetch`, `mcp_call`) that check policies before executing. You then block the built-in tools so the agent is forced to use Carapace's versions.
-
-Add this to `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "plugins": {
-    "entries": {
-      "carapace": {
-        "enabled": true,
-        "config": {
-          "guiPort": 19820,
-          "defaultPolicy": "allow-all",
-          "servers": {
-            "filesystem": {
-              "transport": "stdio",
-              "command": "npx",
-              "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-Then block the built-in bypass tools:
+**2. Run setup:**
 
 ```bash
 openclaw carapace setup
 openclaw gateway restart
 ```
 
-Verify there are no bypasses:
+This automatically:
+- Points your LLM provider at the Carapace proxy (sets `models.providers.<provider>.baseUrl`)
+- Denies built-in tools that would bypass Cedar (`exec`, `web_fetch`, `web_search`)
+
+Your existing API key environment variable (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) still works — the proxy replaces the auth header when forwarding. You don't need to move any keys around.
+
+**3. Verify:**
 
 ```bash
+curl http://127.0.0.1:19821/health
+# Should return: {"ok":true,"stats":{"requests":0,...}}
+
 openclaw carapace check
 # Should return: ✅ No bypass vulnerabilities found.
 ```
 
-> ⚠️ **Without running `carapace setup`, policies are advisory.** The agent can use the built-in `exec` tool to skip Cedar entirely. The LLM proxy (Option A) doesn't have this problem.
+#### Option B: Tool-level gating (without proxy)
+
+If you don't want to proxy LLM traffic, just omit the `proxy` section from the config above. Then run:
+
+```bash
+openclaw carapace setup
+openclaw gateway restart
+```
+
+This denies built-in tools (`exec`, `web_fetch`, `web_search`) so the agent must use Carapace's Cedar-gated versions instead.
+
+> ⚠️ **Without the proxy, this relies on the agent using the right tools.** The proxy (Option A) is stronger because it's un-bypassable.
 
 ### Step 3: Open the dashboard
 
