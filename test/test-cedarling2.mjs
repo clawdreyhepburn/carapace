@@ -1,10 +1,11 @@
 import { initSync, init as cedarlingInit } from '@janssenproject/cedarling_wasm';
 import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { dirname, join } from 'path';
 
+const require = createRequire(import.meta.url);
 const wasmPath = join(
-  dirname(fileURLToPath(import.meta.resolve('@janssenproject/cedarling_wasm'))),
+  dirname(require.resolve('@janssenproject/cedarling_wasm')),
   'cedarling_wasm_bg.wasm'
 );
 initSync({ module: readFileSync(wasmPath) });

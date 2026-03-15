@@ -17,6 +17,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/carapace_proxy_tool_filter_flow_v3.svg" alt="Carapace proxy filtering tool calls" width="700">
+</p>
+
 ## What is Carapace?
 
 AI agents can do a lot. They can read and write files, run shell commands, call APIs, send emails, push code — anything you give them access to. That's powerful, but it's also dangerous. An agent that can delete files can delete *all* files. An agent that can call APIs can send your data anywhere.
