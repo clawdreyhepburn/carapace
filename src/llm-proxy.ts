@@ -14,7 +14,9 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { Logger } from "./types.js";
+import type { Logger, AuthorizationDecision } from "./types.js";
+import type { AgentContextManager, AgentContext } from "./agent-context.js";
+import type { AttenuationProver } from "./attenuation.js";
 
 interface ToolUseBlock {
   type: "tool_use";
@@ -36,7 +38,13 @@ interface CedarAuthorizer {
     action: string;
     resource: string;
     context?: Record<string, unknown>;
-  }): Promise<{ decision: "allow" | "deny"; reasons: string[] }>;
+  }, agentContext?: any): Promise<{ decision: "allow" | "deny"; reasons: string[] }>;
+  authorizeWithDecision?(request: {
+    principal: string;
+    action: string;
+    resource: string;
+    context?: Record<string, unknown>;
+  }, agentContext?: any): Promise<AuthorizationDecision>;
 }
 
 export interface LlmProxyOpts {
@@ -47,6 +55,8 @@ export interface LlmProxyOpts {
   };
   cedar: CedarAuthorizer;
   logger: Logger;
+  agentContextManager?: AgentContextManager;
+  attenuationProver?: AttenuationProver;
 }
 
 export class LlmProxy {
@@ -55,6 +65,8 @@ export class LlmProxy {
   private upstream: LlmProxyOpts["upstream"];
   private cedar: CedarAuthorizer;
   private logger: Logger;
+  private agentContextManager?: AgentContextManager;
+  private attenuationProver?: AttenuationProver;
 
   // Stats
   private stats = {
@@ -63,11 +75,28 @@ export class LlmProxy {
     toolCallsDenied: 0,
   };
 
+  // Audit log for GUI display
+  private auditLog: Array<{
+    timestamp: number;
+    tool: string;
+    decision: "allow" | "deny";
+    attestation?: string;
+    agentId?: string;
+    agentRole?: string;
+    reasons: string[];
+  }> = [];
+
   constructor(opts: LlmProxyOpts) {
     this.port = opts.port;
     this.upstream = opts.upstream;
     this.cedar = opts.cedar;
     this.logger = opts.logger;
+    this.agentContextManager = opts.agentContextManager;
+    this.attenuationProver = opts.attenuationProver;
+  }
+
+  getAuditLog() {
+    return this.auditLog.slice(-100); // last 100 entries
   }
 
   async start(): Promise<void> {
@@ -134,6 +163,9 @@ export class LlmProxy {
       return;
     }
 
+    // Resolve OVID agent context from headers (backwards compatible — absent = no agent)
+    const agentCtx = this.resolveAgentFromHeaders(req);
+
     const body = await this.readBody(req);
     let parsed: any;
     try {
@@ -160,9 +192,9 @@ export class LlmProxy {
     }
 
     if (isStreaming) {
-      await this.handleAnthropicStreaming(upstreamResponse, res);
+      await this.handleAnthropicStreaming(upstreamResponse, res, agentCtx);
     } else {
-      await this.handleAnthropicNonStreaming(upstreamResponse, res);
+      await this.handleAnthropicNonStreaming(upstreamResponse, res, agentCtx);
     }
   }
 
@@ -190,7 +222,7 @@ export class LlmProxy {
     });
   }
 
-  private async handleAnthropicNonStreaming(upstreamResponse: Response, res: ServerResponse): Promise<void> {
+  private async handleAnthropicNonStreaming(upstreamResponse: Response, res: ServerResponse, agentCtx?: AgentContext): Promise<void> {
     const responseBody = await upstreamResponse.text();
     let parsed: any;
     try {
@@ -203,7 +235,7 @@ export class LlmProxy {
 
     // Filter tool_use blocks
     if (parsed.content && Array.isArray(parsed.content)) {
-      parsed.content = await this.filterContentBlocks(parsed.content);
+      parsed.content = await this.filterContentBlocks(parsed.content, agentCtx);
 
       // Update stop_reason if all tool_use blocks were denied
       const hasToolUse = parsed.content.some((b: any) => b.type === "tool_use");
@@ -219,7 +251,7 @@ export class LlmProxy {
     res.end(filtered);
   }
 
-  private async handleAnthropicStreaming(upstreamResponse: Response, res: ServerResponse): Promise<void> {
+  private async handleAnthropicStreaming(upstreamResponse: Response, res: ServerResponse, agentCtx?: AgentContext): Promise<void> {
     // Buffer the full streaming response, then filter and re-stream
     const reader = upstreamResponse.body?.getReader();
     if (!reader) {
@@ -285,7 +317,7 @@ export class LlmProxy {
 
     // Evaluate each tool call against Cedar
     for (const [idx, block] of toolBlocks) {
-      const decision = await this.evaluateToolCall(block.name, block.inputJson);
+      const decision = await this.evaluateToolCall(block.name, block.inputJson, agentCtx);
       if (decision === "deny") {
         deniedIndices.add(idx);
         this.logger.info(`LLM Proxy DENIED tool call: ${block.name} (block ${idx})`);
@@ -393,6 +425,7 @@ export class LlmProxy {
   // ── OpenAI Chat Completions API ──
 
   private async proxyOpenAI(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const agentCtx = this.resolveAgentFromHeaders(req);
     const upstream = this.upstream.openai;
     if (!upstream) {
       res.writeHead(501, { "Content-Type": "application/json" });
@@ -456,6 +489,7 @@ export class LlmProxy {
               typeof tc.function?.arguments === "string"
                 ? tc.function.arguments
                 : JSON.stringify(tc.function?.arguments ?? {}),
+              agentCtx,
             );
 
             if (decision === "allow") {
@@ -541,7 +575,22 @@ export class LlmProxy {
 
   // ── Cedar evaluation ──
 
-  private async evaluateToolCall(toolName: string, inputJson: string): Promise<"allow" | "deny"> {
+  /** Resolve agent context from OVID JWT in request headers */
+  private resolveAgentFromHeaders(req: IncomingMessage): AgentContext | undefined {
+    if (!this.agentContextManager) return undefined;
+    const ovidToken = req.headers["x-ovid-token"] as string | undefined;
+    if (!ovidToken) return undefined;
+
+    try {
+      const registration = this.agentContextManager.registerAgent(ovidToken);
+      return registration.agent;
+    } catch (err: any) {
+      this.logger.warn(`Failed to resolve OVID agent: ${err.message}`);
+      return undefined;
+    }
+  }
+
+  private async evaluateToolCall(toolName: string, inputJson: string, agentCtx?: AgentContext): Promise<"allow" | "deny"> {
     this.stats.toolCallsEvaluated++;
 
     let parsedInput: Record<string, unknown> = {};
@@ -589,12 +638,39 @@ export class LlmProxy {
       };
     }
 
+    // Use three-valued decision if agent context is present and engine supports it
+    const agentForCedar = agentCtx ? {
+      agentId: agentCtx.agentId,
+      role: agentCtx.role,
+      parentChain: agentCtx.parentChain,
+      issuer: agentCtx.issuer,
+      depth: agentCtx.depth,
+      attestationProven: agentCtx.attestationProven,
+    } : undefined;
+
     const decision = await this.cedar.authorize({
-      principal: `Agent::"openclaw"`,
+      principal: agentCtx ? `Agent::"${agentCtx.agentId}"` : `Agent::"openclaw"`,
       action: `Action::"${action}"`,
       resource: `${resourceType}::"${resourceId}"`,
       context,
-    });
+    }, agentForCedar);
+
+    // Audit log entry
+    const auditEntry: typeof this.auditLog[0] = {
+      timestamp: Date.now(),
+      tool: toolName,
+      decision: decision.decision,
+      reasons: decision.reasons,
+    };
+
+    if (agentCtx) {
+      auditEntry.agentId = agentCtx.agentId;
+      auditEntry.agentRole = agentCtx.role;
+      auditEntry.attestation = agentCtx.attestationProven ? "proven" : "unproven";
+    }
+
+    this.auditLog.push(auditEntry);
+    if (this.auditLog.length > 500) this.auditLog.splice(0, this.auditLog.length - 100);
 
     if (decision.decision === "deny") {
       this.stats.toolCallsDenied++;
@@ -605,7 +681,7 @@ export class LlmProxy {
 
   // ── Content block filtering (Anthropic non-streaming) ──
 
-  private async filterContentBlocks(blocks: ContentBlock[]): Promise<ContentBlock[]> {
+  private async filterContentBlocks(blocks: ContentBlock[], agentCtx?: AgentContext): Promise<ContentBlock[]> {
     const result: ContentBlock[] = [];
 
     for (const block of blocks) {
@@ -618,6 +694,7 @@ export class LlmProxy {
       const decision = await this.evaluateToolCall(
         toolBlock.name,
         JSON.stringify(toolBlock.input),
+        agentCtx,
       );
 
       if (decision === "allow") {

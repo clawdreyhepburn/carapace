@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlink
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
-import type { Logger, AuthzRequest, CedarDecision, VerifyResult, CedarSchemaInfo, SchemaEntity, SchemaAttribute, SchemaAction } from "./types.js";
+import type { Logger, AuthzRequest, CedarDecision, AuthorizationDecision, AgentContextForCedar, VerifyResult, CedarSchemaInfo, SchemaEntity, SchemaAttribute, SchemaAction } from "./types.js";
 
 interface CedarEngineOpts {
   policyDir: string;
@@ -67,10 +67,31 @@ export class CedarEngine {
   }
 
   /**
+   * Authorize with three-valued decision.
+   */
+  async authorizeWithDecision(request: AuthzRequest, agentContext?: AgentContextForCedar): Promise<AuthorizationDecision> {
+    const cedarDecision = await this.authorize(request, agentContext);
+    const result: AuthorizationDecision = {
+      decision: cedarDecision.decision,
+      determining_policies: cedarDecision.reasons,
+    };
+    if (cedarDecision.decision === "allow" && agentContext) {
+      result.attestation = agentContext.attestationProven ? "proven" : "unproven";
+      result.agent = {
+        agentId: agentContext.agentId,
+        role: agentContext.role,
+        parentChain: agentContext.parentChain,
+        depth: agentContext.depth,
+      };
+    }
+    return result;
+  }
+
+  /**
    * Evaluate an authorization request against loaded policies.
    * Uses Cedar's evaluation semantics: ALLOW requires at least one permit and no forbids.
    */
-  async authorize(request: AuthzRequest): Promise<CedarDecision> {
+  async authorize(request: AuthzRequest, _agentContext?: AgentContextForCedar): Promise<CedarDecision> {
     const reasons: string[] = [];
     let hasPermit = false;
     let hasForbid = false;

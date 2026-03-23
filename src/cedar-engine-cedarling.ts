@@ -15,6 +15,8 @@ import type {
   Logger,
   AuthzRequest,
   CedarDecision,
+  AuthorizationDecision,
+  AgentContextForCedar,
   VerifyResult,
   CedarSchemaInfo,
   SchemaEntity,
@@ -122,9 +124,33 @@ export class CedarlingEngine {
   }
 
   /**
+   * Authorize with three-valued decision (allow+proven, allow+unproven, deny).
+   */
+  async authorizeWithDecision(request: AuthzRequest, agentContext?: AgentContextForCedar): Promise<AuthorizationDecision> {
+    const cedarDecision = await this.authorize(request, agentContext);
+
+    const result: AuthorizationDecision = {
+      decision: cedarDecision.decision,
+      determining_policies: cedarDecision.reasons,
+    };
+
+    if (cedarDecision.decision === "allow" && agentContext) {
+      result.attestation = agentContext.attestationProven ? "proven" : "unproven";
+      result.agent = {
+        agentId: agentContext.agentId,
+        role: agentContext.role,
+        parentChain: agentContext.parentChain,
+        depth: agentContext.depth,
+      };
+    }
+
+    return result;
+  }
+
+  /**
    * Authorize a request using Cedarling WASM.
    */
-  async authorize(request: AuthzRequest): Promise<CedarDecision> {
+  async authorize(request: AuthzRequest, agentContext?: AgentContextForCedar): Promise<CedarDecision> {
     if (!this.cedarling) {
       // Fallback: basic string matching (same as homebrew engine)
       return this.authorizeBasic(request);
@@ -150,14 +176,27 @@ export class CedarlingEngine {
       const typeMatch = request.resource.match(/^(?:\w+::)?(\w+)::/);
       if (typeMatch) resourceEntityType = typeMatch[1];
 
+      // Build Cedar context, injecting OVID claims when present
+      const cedarContext: Record<string, unknown> = { ...(request.context ?? {}) };
+      if (agentContext) {
+        cedarContext.agent_role = agentContext.role;
+        cedarContext.agent_issuer = agentContext.issuer;
+        cedarContext.agent_depth = agentContext.depth;
+        cedarContext.agent_parent_chain = agentContext.parentChain;
+        cedarContext.agent_attestation_proven = agentContext.attestationProven;
+      }
+
+      // Use agent ID as principal if agent context is provided
+      const effectivePrincipalId = agentContext ? agentContext.agentId : principalId;
+
       const result = await this.cedarling.authorize_unsigned({
         principals: [
           {
             cedar_entity_mapping: {
               entity_type: `${this.namespace}::${this.agentEntityType}`,
-              id: principalId,
+              id: effectivePrincipalId,
             },
-            name: principalId,
+            name: effectivePrincipalId,
           },
         ],
         action: `${this.namespace}::Action::"${actionName}"`,
@@ -168,7 +207,7 @@ export class CedarlingEngine {
           },
           ...(request.context ?? {}),
         },
-        context: request.context ?? {},
+        context: cedarContext,
       });
 
       const decision = result.decision ? "allow" : "deny";
@@ -496,6 +535,38 @@ export class CedarlingEngine {
               },
             },
           },
+          Agent: {
+            shape: {
+              type: "Record",
+              attributes: {
+                role: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                parentChain: {
+                  type: "Set",
+                  element: { type: "EntityOrCommon", name: "String" },
+                  required: false,
+                },
+                issuer: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                depth: {
+                  type: "EntityOrCommon",
+                  name: "Long",
+                  required: false,
+                },
+                attestation_proven: {
+                  type: "EntityOrCommon",
+                  name: "Boolean",
+                  required: false,
+                },
+              },
+            },
+          },
           Tool: {
             shape: {
               type: "Record",
@@ -506,6 +577,21 @@ export class CedarlingEngine {
                   required: false,
                 },
                 name: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                project: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                team: {
+                  type: "EntityOrCommon",
+                  name: "String",
+                  required: false,
+                },
+                domain: {
                   type: "EntityOrCommon",
                   name: "String",
                   required: false,
@@ -556,9 +642,17 @@ export class CedarlingEngine {
         actions: {
           call_tool: {
             appliesTo: {
-              principalTypes: [this.agentEntityType],
+              principalTypes: [this.agentEntityType, "Agent"],
               resourceTypes: ["Tool"],
-              context: { type: "Record", attributes: {} },
+              context: {
+                type: "Record",
+                attributes: {
+                  agent_role: { type: "EntityOrCommon", name: "String", required: false },
+                  agent_issuer: { type: "EntityOrCommon", name: "String", required: false },
+                  agent_depth: { type: "EntityOrCommon", name: "Long", required: false },
+                  agent_attestation_proven: { type: "EntityOrCommon", name: "Boolean", required: false },
+                },
+              },
             },
           },
           list_tools: {

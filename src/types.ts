@@ -89,6 +89,20 @@ export interface CedarDecision {
   reasons: string[];
 }
 
+export type AttestationStatus = 'proven' | 'unproven' | 'failed';
+
+export interface AuthorizationDecision {
+  decision: 'allow' | 'deny';
+  attestation?: AttestationStatus;  // only present on 'allow'
+  determining_policies?: string[];
+  agent?: {
+    agentId: string;
+    role: string;
+    parentChain: string[];
+    depth: number;
+  };
+}
+
 export interface AuthzRequest {
   principal: string;
   action: string;
@@ -96,10 +110,21 @@ export interface AuthzRequest {
   context?: Record<string, unknown>;
 }
 
+/** Agent context for Cedar evaluation (from OVID JWT) */
+export interface AgentContextForCedar {
+  agentId: string;
+  role: string;
+  parentChain: string[];
+  issuer: string;
+  depth: number;
+  attestationProven: boolean;
+}
+
 /** Common interface for Cedar engines (homebrew and Cedarling) */
 export interface CedarEngineInterface {
   init(): Promise<void>;
-  authorize(request: AuthzRequest): Promise<CedarDecision>;
+  authorize(request: AuthzRequest, agentContext?: AgentContextForCedar): Promise<CedarDecision>;
+  authorizeWithDecision?(request: AuthzRequest, agentContext?: AgentContextForCedar): Promise<AuthorizationDecision>;
   enableTool(qualifiedName: string): void;
   disableTool(qualifiedName: string): void;
   isToolEnabled(qualifiedName: string): boolean;

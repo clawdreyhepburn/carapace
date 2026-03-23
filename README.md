@@ -8,6 +8,7 @@
     <a href="#how-it-works">How It Works</a> •
     <a href="#installation">Installation</a> •
     <a href="#quick-start">Quick Start</a> •
+    <a href="#agent-hierarchy--ovid-integration">Agent Hierarchy</a> •
     <a href="docs/SECURITY.md">Security Guide</a> •
     <a href="docs/RECOMMENDED-POLICIES.md">Recommended Policies</a> •
     <a href="#the-control-gui">Control GUI</a> •
@@ -339,6 +340,112 @@ forbid(principal, action == Jans::Action::"call_api", resource == Jans::API::"pa
 
 ---
 
+## Agent Hierarchy & OVID Integration
+
+When AI agents spawn sub-agents, those sub-agents typically inherit all of the parent's credentials and permissions. Carapace solves this with **agent-aware authorization** and **three-valued decisions**.
+
+### How it works
+
+When a sub-agent carries an [OVID](https://github.com/clawdreyhepburn/ovid) identity token (a signed JWT), Carapace uses its claims — role, parent chain, issuer — as Cedar context for policy evaluation. No OVID token? Everything works exactly as before.
+
+```
+Primary Agent (has OVID)
+  │
+  │  spawns sub-agent with scoped OVID
+  ▼
+Sub-Agent (carries OVID JWT in X-OVID-Token header)
+  │
+  │  makes tool call
+  ▼
+Carapace LLM Proxy
+  │
+  │  extracts OVID claims → passes as Cedar context
+  ▼
+Cedar evaluates: role + parentChain + depth + resource attributes
+  │
+  ▼
+Three-valued decision: DENY / ALLOW (proven) / ALLOW (unproven)
+```
+
+### Three-valued decisions
+
+Instead of just allow/deny, Carapace returns one of three results:
+
+| Decision | Meaning |
+|----------|---------|
+| **DENY** | Cedar said no. Full stop. |
+| **ALLOW (proven)** | Cedar said yes, AND the sub-agent's effective permissions have been formally proven to be a subset of its parent's. |
+| **ALLOW (unproven)** | Cedar said yes, but the subset relationship hasn't been formally verified. The action is permitted, but attenuation isn't guaranteed. |
+
+The proof runs once when the agent registers (at spawn time), and the result is cached. This means every subsequent decision for that agent includes its attestation status without re-running the prover.
+
+### Writing agent-aware policies
+
+With the agent hierarchy, your Cedar policies can use fine-grained attributes — not just roles:
+
+```cedar
+// Code reviewers can read files, but only in their project
+permit(
+  principal is Jans::Workload,
+  action == Jans::Action::"use_tool",
+  resource is Jans::Tool
+) when {
+  context.agent_role == "code-reviewer" &&
+  resource.project == "carapace"
+};
+
+// Only proven-attested agents can deploy
+forbid(
+  principal is Jans::Workload,
+  action == Jans::Action::"exec_command",
+  resource == Jans::Shell::"deploy"
+) when {
+  context.agent_attestation_proven == false
+};
+
+// Deny any agent deeper than 3 levels from touching credentials
+forbid(
+  principal is Jans::Workload,
+  action == Jans::Action::"use_tool",
+  resource == Jans::Tool::"read_file"
+) when {
+  context.agent_depth > 3 &&
+  resource.path like "*.credentials*"
+};
+```
+
+### OVID context attributes
+
+When an OVID token is present, these attributes are available in Cedar's `context`:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `agent_role` | String | The agent's role (freeform — "code-reviewer", "browser-worker", etc.) |
+| `agent_issuer` | String | Who issued this agent's OVID (the parent agent's ID) |
+| `agent_depth` | Long | How many levels deep in the delegation chain (1 = direct sub-agent) |
+| `agent_parent_chain` | Set&lt;String&gt; | Full chain of parent IDs back to the root |
+| `agent_attestation_proven` | Bool | Whether the agent's scope attenuation has been formally proven |
+
+### Resource attributes
+
+Resources now support optional attributes for fine-grained control:
+
+| Attribute | Type | Available on |
+|-----------|------|-------------|
+| `project` | String | Tool, Shell |
+| `team` | String | Tool, Shell |
+| `domain` | String | Tool, API |
+
+### Viewing agents in the GUI
+
+The dashboard exposes a `/api/agents` endpoint showing all registered agents — their roles, parent chains, expiry times, and attestation status. A frontend view is coming soon.
+
+### Without OVID
+
+Don't use OVID? That's fine. Agent hierarchy features activate only when an `X-OVID-Token` header is present. Without it, Carapace works exactly as before — same policies, same behavior, same `Jans::Workload` principal.
+
+---
+
 ## Design Philosophy
 
 **Installing Carapace should never break your agent.** The default is `allow-all` — everything works exactly as before. You get visibility first (see what tools exist, what's being called) and control second (add restrictions when you're ready).
@@ -362,6 +469,7 @@ Most people should stay at step 3. Step 4 is for when you really understand your
 - **Prompt injection** — Someone tricks your agent into running dangerous commands. If the policy says `rm` is forbidden, it doesn't matter what the prompt says.
 - **Data exfiltration** — Your agent tries to send sensitive data to an external service. If the domain isn't permitted, the request is blocked.
 - **Privilege escalation** — An agent tries to use one permitted tool to accomplish what a forbidden tool would do. Cedar's forbid-always-wins makes this harder.
+- **Sub-agent over-privilege** — A sub-agent inherits more access than it needs. With OVID integration, Carapace evaluates each sub-agent against its own role and attestation chain, and can formally prove that a sub-agent's permissions are a subset of its parent's.
 
 ### What Carapace does NOT protect against
 
@@ -446,6 +554,8 @@ carapace/
 │   ├── cedar-engine-cedarling.ts # Cedarling WASM engine — real Cedar 4.4.2 evaluation
 │   ├── cedar-engine.ts           # Fallback engine (string matching, no WASM needed)
 │   ├── mcp-aggregator.ts         # Connects to MCP servers, discovers tools, proxies calls
+│   ├── agent-context.ts           # Agent context manager — OVID JWT registration, TTL eviction
+│   ├── attenuation.ts            # Proof-based scope attenuation (SMT stub + heuristic checks)
 │   ├── types.ts                  # Shared TypeScript types
 │   └── gui/
 │       ├── server.ts             # HTTP server for the dashboard
@@ -485,6 +595,7 @@ More at [clawdrey.com](https://clawdrey.com).
 - **[Cedar](https://www.cedarpolicy.com/)** — Policy language by AWS. Human-readable rules with formal guarantees.
 - **[Cedarling](https://github.com/JanssenProject/jans/tree/main/jans-cedarling)** — Cedar engine by [Gluu](https://gluu.org/), compiled to WebAssembly for speed.
 - **[MCP](https://modelcontextprotocol.io/)** — Open protocol for connecting AI agents to tools.
+- **[OVID](https://github.com/clawdreyhepburn/ovid)** — Lightweight agent identity documents (Ed25519-signed JWTs with attestation chains).
 - **[OpenClaw](https://github.com/openclaw/openclaw)** — Open-source AI agent platform.
 
 ---
