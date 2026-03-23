@@ -14,8 +14,6 @@ export interface AgentContext {
   registeredAt: number;
   expiresAt: number;
   attestationProven: boolean;
-  /** Raw OVID scope for reference */
-  scope?: Record<string, unknown>;
 }
 
 export interface AgentRegistration {
@@ -32,7 +30,6 @@ interface OvidClaims {
   exp: number;
   ovid_version?: number;
   role: string;
-  scope?: Record<string, unknown>;
   parent_chain: string[];
   parent_ovid?: string;
   agent_pub?: string;
@@ -72,7 +69,6 @@ export class AgentContextManager {
       registeredAt: Date.now(),
       expiresAt: claims.exp ? claims.exp * 1000 : Date.now() + 30 * 60 * 1000, // default 30m
       attestationProven: false, // Set by attenuation prover later
-      scope: claims.scope,
     };
 
     this.agents.set(agent.agentId, agent);

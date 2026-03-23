@@ -351,7 +351,7 @@ When a sub-agent carries an [OVID](https://github.com/clawdreyhepburn/ovid) iden
 ```
 Primary Agent (has OVID)
   │
-  │  spawns sub-agent with scoped OVID
+  │  spawns sub-agent with OVID identity
   ▼
 Sub-Agent (carries OVID JWT in X-OVID-Token header)
   │
@@ -424,7 +424,7 @@ When an OVID token is present, these attributes are available in Cedar's `contex
 | `agent_issuer` | String | Who issued this agent's OVID (the parent agent's ID) |
 | `agent_depth` | Long | How many levels deep in the delegation chain (1 = direct sub-agent) |
 | `agent_parent_chain` | Set&lt;String&gt; | Full chain of parent IDs back to the root |
-| `agent_attestation_proven` | Bool | Whether the agent's scope attenuation has been formally proven |
+| `agent_attestation_proven` | Bool | Whether the agent's effective permissions have been formally proven to be a subset of its parent's |
 
 ### Resource attributes
 
@@ -555,7 +555,7 @@ carapace/
 │   ├── cedar-engine.ts           # Fallback engine (string matching, no WASM needed)
 │   ├── mcp-aggregator.ts         # Connects to MCP servers, discovers tools, proxies calls
 │   ├── agent-context.ts           # Agent context manager — OVID JWT registration, TTL eviction
-│   ├── attenuation.ts            # Proof-based scope attenuation (SMT stub + heuristic checks)
+│   ├── attenuation.ts            # Proof-based policy attenuation (SMT stub + heuristic checks)
 │   ├── types.ts                  # Shared TypeScript types
 │   └── gui/
 │       ├── server.ts             # HTTP server for the dashboard
