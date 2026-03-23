@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CarapacePolicySource } from "../src/policy-source.js";
+import { CarapacePolicySource, type PolicySource } from "../src/policy-source.js";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -38,6 +38,14 @@ describe("CarapacePolicySource", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+
+  it("CarapacePolicySource implements PolicySource interface", () => {
+    // Type compatibility check — if ovid-me's PolicySource drifts,
+    // this will fail to compile. CarapacePolicySource must satisfy
+    // the local PolicySource interface which mirrors ovid-me's.
+    const source: PolicySource = new CarapacePolicySource("/tmp/nonexistent");
+    expect(source.getEffectivePolicy).toBeTypeOf("function");
   });
 
   it("returns same policies regardless of principal (deployment-wide)", async () => {

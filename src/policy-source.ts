@@ -8,8 +8,13 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 /**
- * Interface matching @clawdreyhepburn/ovid-me's PolicySource.
- * Defined locally to avoid circular dependencies.
+ * Must match @clawdreyhepburn/ovid-me PolicySource interface.
+ *
+ * Kept as a local copy because ovid-me pulls in native dependencies
+ * (better-sqlite3) that would bloat Carapace's install. A type
+ * compatibility test in test/policy-source.test.ts guards against drift.
+ *
+ * Canonical definition: ovid-me/src/config.ts
  */
 export interface PolicySource {
   getEffectivePolicy(principal: string): Promise<string | null>;
