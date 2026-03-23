@@ -15,8 +15,6 @@ import type {
   Logger,
   AuthzRequest,
   CedarDecision,
-  AuthorizationDecision,
-  AgentContextForCedar,
   VerifyResult,
   CedarSchemaInfo,
   SchemaEntity,
@@ -124,33 +122,9 @@ export class CedarlingEngine {
   }
 
   /**
-   * Authorize with three-valued decision (allow+proven, allow+unproven, deny).
-   */
-  async authorizeWithDecision(request: AuthzRequest, agentContext?: AgentContextForCedar): Promise<AuthorizationDecision> {
-    const cedarDecision = await this.authorize(request, agentContext);
-
-    const result: AuthorizationDecision = {
-      decision: cedarDecision.decision,
-      determining_policies: cedarDecision.reasons,
-    };
-
-    if (cedarDecision.decision === "allow" && agentContext) {
-      result.attestation = agentContext.attestationProven ? "proven" : "unproven";
-      result.agent = {
-        agentId: agentContext.agentId,
-        role: agentContext.role,
-        parentChain: agentContext.parentChain,
-        depth: agentContext.depth,
-      };
-    }
-
-    return result;
-  }
-
-  /**
    * Authorize a request using Cedarling WASM.
    */
-  async authorize(request: AuthzRequest, agentContext?: AgentContextForCedar): Promise<CedarDecision> {
+  async authorize(request: AuthzRequest): Promise<CedarDecision> {
     if (!this.cedarling) {
       // Fallback: basic string matching (same as homebrew engine)
       return this.authorizeBasic(request);
@@ -176,18 +150,9 @@ export class CedarlingEngine {
       const typeMatch = request.resource.match(/^(?:\w+::)?(\w+)::/);
       if (typeMatch) resourceEntityType = typeMatch[1];
 
-      // Build Cedar context, injecting OVID claims when present
       const cedarContext: Record<string, unknown> = { ...(request.context ?? {}) };
-      if (agentContext) {
-        cedarContext.agent_role = agentContext.role;
-        cedarContext.agent_issuer = agentContext.issuer;
-        cedarContext.agent_depth = agentContext.depth;
-        cedarContext.agent_parent_chain = agentContext.parentChain;
-        cedarContext.agent_attestation_proven = agentContext.attestationProven;
-      }
 
-      // Use agent ID as principal if agent context is provided
-      const effectivePrincipalId = agentContext ? agentContext.agentId : principalId;
+      const effectivePrincipalId = principalId;
 
       const result = await this.cedarling.authorize_unsigned({
         principals: [

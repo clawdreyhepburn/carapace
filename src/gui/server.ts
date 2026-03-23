@@ -8,7 +8,6 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { McpAggregator } from "../mcp-aggregator.js";
 import type { Logger, CedarEngineInterface } from "../types.js";
-import type { AgentContextManager } from "../agent-context.js";
 import { guiHtml } from "./html.js";
 
 interface GuiOpts {
@@ -16,7 +15,6 @@ interface GuiOpts {
   aggregator: McpAggregator;
   cedar: CedarEngineInterface;
   logger: Logger;
-  agentContextManager?: AgentContextManager;
 }
 
 export class ControlGui {
@@ -25,14 +23,14 @@ export class ControlGui {
   private cedar: CedarEngineInterface;
   private logger: Logger;
   private server: Server | null = null;
-  private agentContextManager?: AgentContextManager;
+
 
   constructor(opts: GuiOpts) {
     this.port = opts.port;
     this.aggregator = opts.aggregator;
     this.cedar = opts.cedar;
     this.logger = opts.logger;
-    this.agentContextManager = opts.agentContextManager;
+
   }
 
   async start(): Promise<void> {
@@ -139,18 +137,17 @@ export class ControlGui {
       }
 
       if (url.pathname === "/api/agents" && req.method === "GET") {
-        const agents = this.agentContextManager?.getAll() ?? [];
-        this.json(res, agents.map(a => ({
-          agentId: a.agentId,
-          role: a.role,
-          parentChain: a.parentChain,
-          issuer: a.issuer,
-          depth: a.depth,
-          registeredAt: a.registeredAt,
-          expiresAt: a.expiresAt,
-          attestationProven: a.attestationProven,
-          attestation: a.attestationProven ? "proven" : "unproven",
-        })));
+        // Agent hierarchy removed — see @clawdreyhepburn/ovid-me for per-agent mandates
+        this.json(res, []);
+        return;
+      }
+
+      if (url.pathname === "/api/policy-source" && req.method === "GET") {
+        // Return all Cedar policies (deployment-wide ceiling)
+        const policies = this.cedar.getPolicies();
+        const policyText = policies.map(p => p.raw).join("\n\n");
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(policyText || "# No policies defined\n");
         return;
       }
 

@@ -9,10 +9,10 @@ import { CedarlingEngine } from "./cedar-engine-cedarling.js";
 import { McpAggregator } from "./mcp-aggregator.js";
 import { ControlGui } from "./gui/server.js";
 import { LlmProxy } from "./llm-proxy.js";
-import { AgentContextManager } from "./agent-context.js";
-import { AttenuationProver } from "./attenuation.js";
 import type { PluginConfig } from "./types.js";
 
+export { CarapacePolicySource } from "./policy-source.js";
+export type { PolicySource } from "./policy-source.js";
 export const id = "carapace";
 export const name = "Carapace";
 
@@ -60,16 +60,11 @@ export default function register(api: OpenClawPluginApi) {
     logger,
   });
 
-  // --- Agent context and attenuation ---
-  const agentContextManager = new AgentContextManager();
-  const attenuationProver = new AttenuationProver();
-
   const gui = new ControlGui({
     port: config.guiPort ?? 19820,
     aggregator,
     cedar,
     logger,
-    agentContextManager,
   });
 
   // --- LLM Proxy: intercept tool calls at the API level ---
@@ -88,8 +83,6 @@ export default function register(api: OpenClawPluginApi) {
     },
     cedar,
     logger,
-    agentContextManager,
-    attenuationProver,
   }) : null;
 
   // --- Bypass detection: warn if built-in tools aren't denied ---
@@ -211,7 +204,6 @@ export default function register(api: OpenClawPluginApi) {
       if (proxy) await proxy.stop();
       await gui.stop();
       await aggregator.disconnectAll();
-      agentContextManager.destroy();
       logger.info("Carapace stopped");
     },
   });

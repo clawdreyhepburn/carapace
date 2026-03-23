@@ -2,13 +2,13 @@
   <h1 align="center">🦞 Carapace</h1>
   <p align="center"><strong>Your agent's exoskeleton.</strong></p>
   <p align="center">
-    Controls what your AI agent can do — which tools it can use, which commands it can run, and which websites it can talk to. If a policy says no, the agent can't do it.
+    The deployment-level policy ceiling for AI agents. Controls which tools, commands, and APIs your agent can access. Simple allow/deny Cedar evaluation — if a policy says no, it's no. For per-agent mandate evaluation, see <a href="https://github.com/clawdreyhepburn/ovid-me">@clawdreyhepburn/ovid-me</a>.
   </p>
   <p align="center">
     <a href="#how-it-works">How It Works</a> •
     <a href="#installation">Installation</a> •
     <a href="#quick-start">Quick Start</a> •
-    <a href="#agent-hierarchy--ovid-integration">Agent Hierarchy</a> •
+    <a href="#policy-source">Policy Source</a> •
     <a href="docs/SECURITY.md">Security Guide</a> •
     <a href="docs/RECOMMENDED-POLICIES.md">Recommended Policies</a> •
     <a href="#the-control-gui">Control GUI</a> •
@@ -340,109 +340,30 @@ forbid(principal, action == Jans::Action::"call_api", resource == Jans::API::"pa
 
 ---
 
-## Agent Hierarchy & OVID Integration
+## Policy Source
 
-When AI agents spawn sub-agents, those sub-agents typically inherit all of the parent's credentials and permissions. Carapace solves this with **agent-aware authorization** and **three-valued decisions**.
+Carapace is the **deployment-level policy ceiling** — it defines the maximum set of permissions any agent can have. For per-agent mandate evaluation (role-based restrictions, delegation chains, subset proofs), see [`@clawdreyhepburn/ovid-me`](https://github.com/clawdreyhepburn/ovid-me).
 
-### How it works
+### How OVID-ME queries Carapace
 
-When a sub-agent carries an [OVID](https://github.com/clawdreyhepburn/ovid) identity token (a signed JWT), Carapace uses its claims — role, parent chain, issuer — as Cedar context for policy evaluation. No OVID token? Everything works exactly as before.
+OVID-ME needs to know the deployment's effective Cedar policies to verify that a sub-agent's mandate is a subset of what the deployment allows. Carapace exposes this via the `PolicySource` interface:
 
-```
-Primary Agent (has OVID)
-  │
-  │  spawns sub-agent with OVID identity
-  ▼
-Sub-Agent (carries OVID JWT in X-OVID-Token header)
-  │
-  │  makes tool call
-  ▼
-Carapace LLM Proxy
-  │
-  │  extracts OVID claims → passes as Cedar context
-  ▼
-Cedar evaluates: role + parentChain + depth + resource attributes
-  │
-  ▼
-Three-valued decision: DENY / ALLOW (proven) / ALLOW (unproven)
+```typescript
+import { CarapacePolicySource } from '@clawdreyhepburn/carapace';
+
+const policySource = new CarapacePolicySource('~/.openclaw/mcp-policies/');
+const policies = await policySource.getEffectivePolicy('agent-id');
+// Returns: concatenated Cedar policy text from all .cedar files
 ```
 
-### Three-valued decisions
+The GUI also exposes an HTTP endpoint:
 
-Instead of just allow/deny, Carapace returns one of three results:
-
-| Decision | Meaning |
-|----------|---------|
-| **DENY** | Cedar said no. Full stop. |
-| **ALLOW (proven)** | Cedar said yes, AND the sub-agent's effective permissions have been formally proven to be a subset of its parent's. |
-| **ALLOW (unproven)** | Cedar said yes, but the subset relationship hasn't been formally verified. The action is permitted, but attenuation isn't guaranteed. |
-
-The proof runs once when the agent registers (at spawn time), and the result is cached. This means every subsequent decision for that agent includes its attestation status without re-running the prover.
-
-### Writing agent-aware policies
-
-With the agent hierarchy, your Cedar policies can use fine-grained attributes — not just roles:
-
-```cedar
-// Code reviewers can read files, but only in their project
-permit(
-  principal is Jans::Workload,
-  action == Jans::Action::"use_tool",
-  resource is Jans::Tool
-) when {
-  context.agent_role == "code-reviewer" &&
-  resource.project == "carapace"
-};
-
-// Only proven-attested agents can deploy
-forbid(
-  principal is Jans::Workload,
-  action == Jans::Action::"exec_command",
-  resource == Jans::Shell::"deploy"
-) when {
-  context.agent_attestation_proven == false
-};
-
-// Deny any agent deeper than 3 levels from touching credentials
-forbid(
-  principal is Jans::Workload,
-  action == Jans::Action::"use_tool",
-  resource == Jans::Tool::"read_file"
-) when {
-  context.agent_depth > 3 &&
-  resource.path like "*.credentials*"
-};
+```
+GET http://localhost:19820/api/policy-source?principal=<id>
+→ Returns Cedar policy text (text/plain)
 ```
 
-### OVID context attributes
-
-When an OVID token is present, these attributes are available in Cedar's `context`:
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `agent_role` | String | The agent's role (freeform — "code-reviewer", "browser-worker", etc.) |
-| `agent_issuer` | String | Who issued this agent's OVID (the parent agent's ID) |
-| `agent_depth` | Long | How many levels deep in the delegation chain (1 = direct sub-agent) |
-| `agent_parent_chain` | Set&lt;String&gt; | Full chain of parent IDs back to the root |
-| `agent_attestation_proven` | Bool | Whether the agent's effective permissions have been formally proven to be a subset of its parent's |
-
-### Resource attributes
-
-Resources now support optional attributes for fine-grained control:
-
-| Attribute | Type | Available on |
-|-----------|------|-------------|
-| `project` | String | Tool, Shell |
-| `team` | String | Tool, Shell |
-| `domain` | String | Tool, API |
-
-### Viewing agents in the GUI
-
-The dashboard exposes a `/api/agents` endpoint showing all registered agents — their roles, parent chains, expiry times, and attestation status. A frontend view is coming soon.
-
-### Without OVID
-
-Don't use OVID? That's fine. Agent hierarchy features activate only when an `X-OVID-Token` header is present. Without it, Carapace works exactly as before — same policies, same behavior, same `Jans::Workload` principal.
+Carapace policies are deployment-wide — the same policies apply to all principals. Principal-specific filtering happens in OVID-ME's mandate evaluation, not here.
 
 ---
 
@@ -469,7 +390,7 @@ Most people should stay at step 3. Step 4 is for when you really understand your
 - **Prompt injection** — Someone tricks your agent into running dangerous commands. If the policy says `rm` is forbidden, it doesn't matter what the prompt says.
 - **Data exfiltration** — Your agent tries to send sensitive data to an external service. If the domain isn't permitted, the request is blocked.
 - **Privilege escalation** — An agent tries to use one permitted tool to accomplish what a forbidden tool would do. Cedar's forbid-always-wins makes this harder.
-- **Sub-agent over-privilege** — A sub-agent inherits more access than it needs. With OVID integration, Carapace evaluates each sub-agent against its own role and attestation chain, and can formally prove that a sub-agent's permissions are a subset of its parent's.
+- **Sub-agent over-privilege** — Carapace defines the deployment ceiling. For per-agent mandate enforcement, see [`@clawdreyhepburn/ovid-me`](https://github.com/clawdreyhepburn/ovid-me).
 
 ### What Carapace does NOT protect against
 
@@ -554,8 +475,7 @@ carapace/
 │   ├── cedar-engine-cedarling.ts # Cedarling WASM engine — real Cedar 4.4.2 evaluation
 │   ├── cedar-engine.ts           # Fallback engine (string matching, no WASM needed)
 │   ├── mcp-aggregator.ts         # Connects to MCP servers, discovers tools, proxies calls
-│   ├── agent-context.ts           # Agent context manager — OVID JWT registration, TTL eviction
-│   ├── attenuation.ts            # Proof-based policy attenuation (SMT stub + heuristic checks)
+│   ├── policy-source.ts           # PolicySource for OVID-ME integration
 │   ├── types.ts                  # Shared TypeScript types
 │   └── gui/
 │       ├── server.ts             # HTTP server for the dashboard
@@ -595,8 +515,8 @@ More at [clawdrey.com](https://clawdrey.com).
 - **[Cedar](https://www.cedarpolicy.com/)** — Policy language by AWS. Human-readable rules with formal guarantees.
 - **[Cedarling](https://github.com/JanssenProject/jans/tree/main/jans-cedarling)** — Cedar engine by [Gluu](https://gluu.org/), compiled to WebAssembly for speed.
 - **[MCP](https://modelcontextprotocol.io/)** — Open protocol for connecting AI agents to tools.
-- **[OVID](https://github.com/clawdreyhepburn/ovid)** — Lightweight agent identity documents (Ed25519-signed JWTs with attestation chains).
 - **[OpenClaw](https://github.com/openclaw/openclaw)** — Open-source AI agent platform.
+- **[OVID-ME](https://github.com/clawdreyhepburn/ovid-me)** — Per-agent mandate evaluation (uses Carapace as its policy source).
 
 ---
 
