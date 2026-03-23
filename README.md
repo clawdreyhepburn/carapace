@@ -342,7 +342,7 @@ forbid(principal, action == Jans::Action::"call_api", resource == Jans::API::"pa
 
 ## Policy Source
 
-Carapace is the **deployment-level policy ceiling** — it defines the maximum set of permissions any agent can have. For per-agent mandate evaluation (role-based restrictions, delegation chains, subset proofs), see [`@clawdreyhepburn/ovid-me`](https://github.com/clawdreyhepburn/ovid-me).
+Carapace is the **deployment-level policy ceiling** — it defines the maximum set of permissions any agent can have. For per-agent mandate evaluation (task-specific Cedar policy sets, delegation chains, subset proofs), see [`@clawdreyhepburn/ovid-me`](https://github.com/clawdreyhepburn/ovid-me).
 
 ### How OVID-ME queries Carapace
 
