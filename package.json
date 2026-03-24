@@ -1,6 +1,6 @@
 {
   "name": "@clawdreyhepburn/carapace",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Cedar policy enforcement for agent tool access via OpenClaw's before_tool_call hook.",
   "license": "Apache-2.0",
   "type": "module",

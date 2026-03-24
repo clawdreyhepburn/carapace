@@ -627,10 +627,21 @@ export class CedarlingEngine {
     let hasForbid = false;
     const reasons: string[] = [];
 
+    const principalId = request.principal;
+    const actionId = request.action;
+    const resourceId = request.resource;
+
     for (const [id, policy] of this.policies) {
-      // Simple: check if resource appears in the policy
-      const resourceId = request.resource.replace(/.*::"/g, "").replace(/"$/, "");
-      if (!policy.raw.includes(`"${resourceId}"`)) continue;
+      // Parse constraints from raw policy text
+      const hasPrincipalConstraint = /principal\s*==/.test(policy.raw);
+      const hasActionConstraint = /action\s*==/.test(policy.raw);
+      const hasResourceConstraint = /resource\s*==/.test(policy.raw);
+
+      // Check if this policy matches the request
+      // Unconstrained fields match everything (Cedar semantics)
+      if (hasPrincipalConstraint && !policy.raw.includes(principalId)) continue;
+      if (hasActionConstraint && !policy.raw.includes(actionId)) continue;
+      if (hasResourceConstraint && !policy.raw.includes(resourceId)) continue;
 
       if (policy.effect === "forbid") {
         hasForbid = true;
