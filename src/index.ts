@@ -41,6 +41,46 @@ interface OpenClawPluginApi {
   registerGatewayMethod?(name: string, handler: (ctx: { respond: (ok: boolean, data: any) => void }) => void): void;
 }
 
+/**
+ * Build upstream config from either string or object format.
+ * String format: proxy.upstream = "https://api.anthropic.com", proxy.apiKey = "sk-..."
+ * Object format: proxy.upstream = { anthropic: { url, apiKey }, openai: { url, apiKey } }
+ */
+function buildUpstreamConfig(proxyConfig: NonNullable<PluginConfig["proxy"]>): {
+  anthropic?: { url: string; apiKey: string };
+  openai?: { url: string; apiKey: string };
+} {
+  const upstream = proxyConfig.upstream;
+
+  if (!upstream) return {};
+
+  // String format: single upstream URL + flat apiKey
+  if (typeof upstream === "string") {
+    const apiKey = proxyConfig.apiKey ?? "";
+    const url = upstream;
+    // Guess provider from URL
+    if (url.includes("anthropic")) {
+      return { anthropic: { url, apiKey } };
+    } else if (url.includes("openai")) {
+      return { openai: { url, apiKey } };
+    }
+    // Default to anthropic
+    return { anthropic: { url, apiKey } };
+  }
+
+  // Object format: multi-provider
+  return {
+    anthropic: upstream.anthropic ? {
+      url: upstream.anthropic.url ?? "https://api.anthropic.com",
+      apiKey: upstream.anthropic.apiKey,
+    } : undefined,
+    openai: upstream.openai ? {
+      url: upstream.openai.url ?? "https://api.openai.com",
+      apiKey: upstream.openai.apiKey,
+    } : undefined,
+  };
+}
+
 export default function register(api: OpenClawPluginApi) {
   const config: PluginConfig = api.pluginConfig ?? {};
   const logger = api.logger;
@@ -58,6 +98,9 @@ export default function register(api: OpenClawPluginApi) {
     logger,
   });
 
+  // --- LLM Proxy: intercept tool calls at the API level ---
+  const proxyConfig = config.proxy;
+
   const gui = new ControlGui({
     port: config.guiPort ?? 19820,
     aggregator,
@@ -66,20 +109,9 @@ export default function register(api: OpenClawPluginApi) {
     proxyEnabled: !!proxyConfig?.enabled,
   });
 
-  // --- LLM Proxy: intercept tool calls at the API level ---
-  const proxyConfig = config.proxy;
-  const proxy = proxyConfig?.enabled ? new LlmProxy({
+  let proxy: LlmProxy | null = proxyConfig?.enabled ? new LlmProxy({
     port: proxyConfig.port ?? 19821,
-    upstream: {
-      anthropic: proxyConfig.upstream?.anthropic ? {
-        url: proxyConfig.upstream.anthropic.url ?? "https://api.anthropic.com",
-        apiKey: proxyConfig.upstream.anthropic.apiKey,
-      } : undefined,
-      openai: proxyConfig.upstream?.openai ? {
-        url: proxyConfig.upstream.openai.url ?? "https://api.openai.com",
-        apiKey: proxyConfig.upstream.openai.apiKey,
-      } : undefined,
-    },
+    upstream: buildUpstreamConfig(proxyConfig),
     cedar,
     logger,
   }) : null;
@@ -131,6 +163,17 @@ export default function register(api: OpenClawPluginApi) {
     return { patched: toAdd, alreadyDenied };
   }
 
+  function backupConfig(): void {
+    const { readFileSync, writeFileSync, existsSync, copyFileSync } = require("node:fs");
+    const { join } = require("node:path");
+    const { homedir } = require("node:os");
+    const configPath = join(homedir(), ".openclaw", "openclaw.json");
+    if (existsSync(configPath)) {
+      const backupPath = configPath + ".carapace-backup";
+      copyFileSync(configPath, backupPath);
+    }
+  }
+
   function patchConfigProxyBaseUrl(): { patched: string[]; alreadySet: string[] } {
     const { readFileSync, writeFileSync, existsSync } = require("node:fs");
     const { join } = require("node:path");
@@ -143,28 +186,45 @@ export default function register(api: OpenClawPluginApi) {
     const port = config.proxy?.port ?? 19821;
     const proxyUrl = `http://127.0.0.1:${port}`;
 
-    // Figure out which providers have upstream keys configured
-    const providers: string[] = [];
-    if (config.proxy?.upstream?.anthropic) providers.push("anthropic");
-    if (config.proxy?.upstream?.openai) providers.push("openai");
+    // Figure out which providers are configured
+    const upstreamConfig = proxyConfig ? buildUpstreamConfig(proxyConfig) : {};
+    const providers = Object.keys(upstreamConfig).filter(
+      (k) => upstreamConfig[k as keyof typeof upstreamConfig],
+    );
 
     const patched: string[] = [];
     const alreadySet: string[] = [];
 
     if (!cfg.models) cfg.models = {};
+    if (!cfg.models.mode) cfg.models.mode = "merge";
     if (!cfg.models.providers) cfg.models.providers = {};
 
     for (const provider of providers) {
       if (!cfg.models.providers[provider]) cfg.models.providers[provider] = {};
+      // Ensure models array exists (OpenClaw requires it)
+      if (!Array.isArray(cfg.models.providers[provider].models)) {
+        cfg.models.providers[provider].models = [];
+      }
       if (cfg.models.providers[provider].baseUrl === proxyUrl) {
         alreadySet.push(provider);
       } else {
+        // Store original baseUrl for clean revert
+        if (cfg.models.providers[provider].baseUrl && cfg.models.providers[provider].baseUrl !== proxyUrl) {
+          cfg.models.providers[provider]._originalBaseUrl = cfg.models.providers[provider].baseUrl;
+        }
         cfg.models.providers[provider].baseUrl = proxyUrl;
         patched.push(provider);
       }
     }
 
-    if (patched.length > 0) {
+    // Ensure plugin config is under plugins.entries.carapace.config
+    if (!cfg.plugins) cfg.plugins = {};
+    if (!cfg.plugins.entries) cfg.plugins.entries = {};
+    if (!cfg.plugins.entries.carapace) cfg.plugins.entries.carapace = {};
+    if (!cfg.plugins.entries.carapace.config) cfg.plugins.entries.carapace.config = {};
+
+    if (patched.length > 0 || !cfg.plugins.entries.carapace.enabled) {
+      cfg.plugins.entries.carapace.enabled = true;
       writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
     }
 
@@ -183,10 +243,27 @@ export default function register(api: OpenClawPluginApi) {
 
       if (proxy) {
         await proxy.start();
-        logger.info(
-          `🛡️  LLM Proxy active on http://127.0.0.1:${proxyConfig!.port ?? 19821} — ` +
-          `all tool calls go through Cedar`
-        );
+
+        // Health check: verify proxy is actually responding
+        const proxyPort = proxyConfig!.port ?? 19821;
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 3000);
+          const healthResp = await fetch(`http://127.0.0.1:${proxyPort}/health`, { signal: controller.signal });
+          clearTimeout(timer);
+          if (!healthResp.ok) throw new Error(`HTTP ${healthResp.status}`);
+        } catch (err: any) {
+          logger.error(`❌ Proxy health check failed on port ${proxyPort}: ${err.message}. Disabling proxy.`);
+          try { await proxy.stop(); } catch {}
+          proxy = null;
+        }
+
+        if (proxy) {
+          logger.info(
+            `🛡️  LLM Proxy active on http://127.0.0.1:${proxyPort} — ` +
+            `all tool calls go through Cedar`
+          );
+        }
       } else {
         // Check for bypass vulnerabilities only when proxy is disabled
         const bypasses = checkForBypasses();
@@ -524,6 +601,8 @@ export default function register(api: OpenClawPluginApi) {
         .description("Configure OpenClaw to route all traffic through Carapace")
         .action(async () => {
           console.log("\n🦞 Carapace Setup\n");
+          backupConfig();
+          console.log("  📦 Backed up openclaw.json → openclaw.json.carapace-backup");
           let anyChanges = false;
 
           // 1. Deny built-in bypass tools
@@ -555,7 +634,8 @@ export default function register(api: OpenClawPluginApi) {
             }
             if (patched.length === 0 && alreadySet.length === 0) {
               console.log("    ⚠️  No upstream providers configured in proxy config.");
-              console.log("       Add proxy.upstream.anthropic or proxy.upstream.openai to your plugin config.");
+              console.log('       Set proxy.upstream to a URL string (e.g., "https://api.anthropic.com") with proxy.apiKey,');
+              console.log("       or use the object format: proxy.upstream = { anthropic: { apiKey: '...' } }");
             }
           } else {
             console.log("\n  LLM proxy not enabled — skipping baseUrl setup.");
@@ -609,11 +689,18 @@ export default function register(api: OpenClawPluginApi) {
             if (cfg.models?.providers) {
               for (const [name, provCfg] of Object.entries(cfg.models.providers)) {
                 if ((provCfg as any)?.baseUrl === proxyUrl) {
-                  delete (provCfg as any).baseUrl;
+                  // Restore original baseUrl if stored
+                  if ((provCfg as any)._originalBaseUrl) {
+                    (provCfg as any).baseUrl = (provCfg as any)._originalBaseUrl;
+                    delete (provCfg as any)._originalBaseUrl;
+                    console.log(`  ✅ Restored original baseUrl for ${name}`);
+                  } else {
+                    delete (provCfg as any).baseUrl;
+                    console.log(`  ✅ Removed baseUrl proxy override for ${name}`);
+                  }
                   // Clean up empty objects
                   if (Object.keys(provCfg as any).length === 0) delete cfg.models.providers[name];
                   changed = true;
-                  console.log(`  ✅ Removed baseUrl proxy override for ${name}`);
                   console.log(`     ${name} will connect directly to its API again.`);
                 }
               }

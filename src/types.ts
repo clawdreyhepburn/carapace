@@ -27,10 +27,13 @@ export interface PluginConfig {
   proxy?: {
     enabled?: boolean;
     port?: number;  // default: 19821
-    upstream?: {
+    /** String (simple: base URL) or object (multi-provider) */
+    upstream?: string | {
       anthropic?: { url?: string; apiKey: string };
       openai?: { url?: string; apiKey: string };
     };
+    /** API key for the upstream provider (used with string upstream) */
+    apiKey?: string;
   };
 }
 
