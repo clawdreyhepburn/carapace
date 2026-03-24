@@ -339,6 +339,13 @@ export function guiHtml(): string {
     </div>
   </header>
 
+  <div id="not-enforcing-banner" style="display:none; background:#e8a735; color:#1a1a1a; padding:1rem 1.5rem; font-size:0.95rem; text-align:center; font-weight:500; line-height:1.6;">
+    ⚠️ Carapace is loaded but <strong>not enforcing</strong>. No tools are gated and the LLM proxy is disabled.
+    Your agent is running without policy protection.<br>
+    To activate, run these two commands in your terminal:<br>
+    <code style="background:rgba(0,0,0,0.1); padding:0.3em 0.6em; border-radius:3px; display:inline-block; margin-top:0.3rem;">openclaw carapace setup && openclaw gateway restart</code>
+  </div>
+
   <div class="container">
     <div id="servers-section">
       <h2>MCP Servers</h2>
@@ -533,6 +540,13 @@ export function guiHtml(): string {
     function render() {
       document.getElementById('total-count').textContent = state.toolCount ?? state.tools.length;
       document.getElementById('enabled-count').textContent = state.enabledCount ?? state.tools.filter(t => t.enabled).length;
+
+      // Show/hide not-enforcing banner
+      const banner = document.getElementById('not-enforcing-banner');
+      if (banner) {
+        banner.style.display = state.notEnforcing ? 'block' : 'none';
+      }
+
       renderServers();
       renderTools();
       renderPolicies();

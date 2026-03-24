@@ -150,18 +150,14 @@ export class CedarlingEngine {
       const typeMatch = request.resource.match(/^(?:\w+::)?(\w+)::/);
       if (typeMatch) resourceEntityType = typeMatch[1];
 
-      const cedarContext: Record<string, unknown> = { ...(request.context ?? {}) };
-
-      const effectivePrincipalId = principalId;
-
       const result = await this.cedarling.authorize_unsigned({
         principals: [
           {
             cedar_entity_mapping: {
               entity_type: `${this.namespace}::${this.agentEntityType}`,
-              id: effectivePrincipalId,
+              id: principalId,
             },
-            name: effectivePrincipalId,
+            name: principalId,
           },
         ],
         action: `${this.namespace}::Action::"${actionName}"`,
@@ -172,7 +168,7 @@ export class CedarlingEngine {
           },
           ...(request.context ?? {}),
         },
-        context: cedarContext,
+        context: request.context ?? {},
       });
 
       const decision = result.decision ? "allow" : "deny";
@@ -500,38 +496,6 @@ export class CedarlingEngine {
               },
             },
           },
-          Agent: {
-            shape: {
-              type: "Record",
-              attributes: {
-                role: {
-                  type: "EntityOrCommon",
-                  name: "String",
-                  required: false,
-                },
-                parentChain: {
-                  type: "Set",
-                  element: { type: "EntityOrCommon", name: "String" },
-                  required: false,
-                },
-                issuer: {
-                  type: "EntityOrCommon",
-                  name: "String",
-                  required: false,
-                },
-                depth: {
-                  type: "EntityOrCommon",
-                  name: "Long",
-                  required: false,
-                },
-                attestation_proven: {
-                  type: "EntityOrCommon",
-                  name: "Boolean",
-                  required: false,
-                },
-              },
-            },
-          },
           Tool: {
             shape: {
               type: "Record",
@@ -542,21 +506,6 @@ export class CedarlingEngine {
                   required: false,
                 },
                 name: {
-                  type: "EntityOrCommon",
-                  name: "String",
-                  required: false,
-                },
-                project: {
-                  type: "EntityOrCommon",
-                  name: "String",
-                  required: false,
-                },
-                team: {
-                  type: "EntityOrCommon",
-                  name: "String",
-                  required: false,
-                },
-                domain: {
                   type: "EntityOrCommon",
                   name: "String",
                   required: false,
@@ -607,17 +556,9 @@ export class CedarlingEngine {
         actions: {
           call_tool: {
             appliesTo: {
-              principalTypes: [this.agentEntityType, "Agent"],
+              principalTypes: [this.agentEntityType],
               resourceTypes: ["Tool"],
-              context: {
-                type: "Record",
-                attributes: {
-                  agent_role: { type: "EntityOrCommon", name: "String", required: false },
-                  agent_issuer: { type: "EntityOrCommon", name: "String", required: false },
-                  agent_depth: { type: "EntityOrCommon", name: "Long", required: false },
-                  agent_attestation_proven: { type: "EntityOrCommon", name: "Boolean", required: false },
-                },
-              },
+              context: { type: "Record", attributes: {} },
             },
           },
           list_tools: {

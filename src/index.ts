@@ -11,8 +11,6 @@ import { ControlGui } from "./gui/server.js";
 import { LlmProxy } from "./llm-proxy.js";
 import type { PluginConfig } from "./types.js";
 
-export { CarapacePolicySource } from "./policy-source.js";
-export type { PolicySource } from "./policy-source.js";
 export const id = "carapace";
 export const name = "Carapace";
 
@@ -65,6 +63,7 @@ export default function register(api: OpenClawPluginApi) {
     aggregator,
     cedar,
     logger,
+    proxyEnabled: !!proxyConfig?.enabled,
   });
 
   // --- LLM Proxy: intercept tool calls at the API level ---
@@ -198,6 +197,17 @@ export default function register(api: OpenClawPluginApi) {
             `Enable the LLM proxy (recommended) or run "openclaw carapace setup" to deny built-in tools.`
           );
         }
+      }
+
+      // Warn if Carapace is loaded but not actually enforcing anything
+      const tools = aggregator.listTools();
+      const enabledCount = tools.filter((t: any) => t.enabled).length;
+      if (!proxy && enabledCount === 0) {
+        logger.warn(
+          `⚠️  Carapace is loaded but NOT ENFORCING. No tools are gated and the LLM proxy is disabled. ` +
+          `Your agent is running without policy protection. ` +
+          `Run "openclaw carapace setup" to activate enforcement, or configure policies at http://localhost:${config.guiPort ?? 19820}`
+        );
       }
     },
     async stop() {

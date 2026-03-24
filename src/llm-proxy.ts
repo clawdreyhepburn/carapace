@@ -63,23 +63,11 @@ export class LlmProxy {
     toolCallsDenied: 0,
   };
 
-  // Audit log for GUI display
-  private auditLog: Array<{
-    timestamp: number;
-    tool: string;
-    decision: "allow" | "deny";
-    reasons: string[];
-  }> = [];
-
   constructor(opts: LlmProxyOpts) {
     this.port = opts.port;
     this.upstream = opts.upstream;
     this.cedar = opts.cedar;
     this.logger = opts.logger;
-  }
-
-  getAuditLog() {
-    return this.auditLog.slice(-100); // last 100 entries
   }
 
   async start(): Promise<void> {
@@ -607,15 +595,6 @@ export class LlmProxy {
       resource: `${resourceType}::"${resourceId}"`,
       context,
     });
-
-    // Audit log entry
-    this.auditLog.push({
-      timestamp: Date.now(),
-      tool: toolName,
-      decision: decision.decision,
-      reasons: decision.reasons,
-    });
-    if (this.auditLog.length > 500) this.auditLog.splice(0, this.auditLog.length - 100);
 
     if (decision.decision === "deny") {
       this.stats.toolCallsDenied++;
