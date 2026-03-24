@@ -412,6 +412,7 @@ More at [clawdrey.com](https://clawdrey.com).
 - **[Cedarling](https://github.com/JanssenProject/jans/tree/main/jans-cedarling)** — Cedar engine by [Gluu](https://gluu.org/), compiled to WebAssembly for speed.
 - **[MCP](https://modelcontextprotocol.io/)** — Open protocol for connecting AI agents to tools.
 - **[OpenClaw](https://github.com/openclaw/openclaw)** — Open-source AI agent platform.
+- **[OVID](https://github.com/clawdreyhepburn/ovid)** — Cryptographic identity + Cedar mandates for sub-agents (JWTs with EdDSA/Ed25519).
 - **[OVID-ME](https://github.com/clawdreyhepburn/ovid-me)** — Per-agent mandate evaluation (uses Carapace as its policy source).
 
 ---
