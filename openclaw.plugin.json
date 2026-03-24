@@ -2,7 +2,7 @@
   "id": "carapace",
   "name": "Carapace",
   "description": "Cedar policy enforcement for agent tool access via before_tool_call hook. Your agent's exoskeleton.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
@@ -20,13 +20,31 @@
           "properties": {
             "transport": {
               "type": "string",
-              "enum": ["stdio", "http", "sse"],
+              "enum": [
+                "stdio",
+                "http",
+                "sse"
+              ],
               "default": "stdio"
             },
-            "command": { "type": "string" },
-            "args": { "type": "array", "items": { "type": "string" } },
-            "env": { "type": "object", "additionalProperties": { "type": "string" } },
-            "url": { "type": "string" }
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "url": {
+              "type": "string"
+            }
           }
         }
       },
@@ -37,7 +55,10 @@
       },
       "defaultPolicy": {
         "type": "string",
-        "enum": ["deny-all", "allow-all"],
+        "enum": [
+          "deny-all",
+          "allow-all"
+        ],
         "default": "allow-all",
         "description": "Default policy when no Cedar policies match. allow-all passes everything through; deny-all blocks everything not explicitly permitted."
       },
@@ -49,9 +70,18 @@
     }
   },
   "uiHints": {
-    "guiPort": { "label": "GUI Port", "placeholder": "19820" },
-    "policyDir": { "label": "Policy Directory" },
-    "defaultPolicy": { "label": "Default Policy" },
-    "verify": { "label": "Enable Formal Verification" }
+    "guiPort": {
+      "label": "GUI Port",
+      "placeholder": "19820"
+    },
+    "policyDir": {
+      "label": "Policy Directory"
+    },
+    "defaultPolicy": {
+      "label": "Default Policy"
+    },
+    "verify": {
+      "label": "Enable Formal Verification"
+    }
   }
 }

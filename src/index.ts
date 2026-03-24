@@ -107,9 +107,12 @@ export default function register(api: OpenClawPluginApi) {
   // --- Register before_tool_call hook ---
   if (api.on) {
     api.on("before_tool_call", async (event: any) => {
+      logger.info(`[Carapace] HOOK FIRED: keys=${JSON.stringify(Object.keys(event))}`);
+      logger.info(`[Carapace] before_tool_call fired: ${JSON.stringify(Object.keys(event))}`);
       const toolName: string = event.toolName ?? event.tool ?? event.name ?? "";
       const params: Record<string, unknown> = event.params ?? event.arguments ?? event.input ?? {};
 
+      logger.info(`[Carapace] tool=${toolName} defaultPolicy=${config.defaultPolicy ?? "allow-all"}`);
       if (!toolName) return {};
 
       stats.toolCallsEvaluated++;
@@ -147,12 +150,26 @@ export default function register(api: OpenClawPluginApi) {
         context = params ? { arguments: params } : {};
       }
 
+      // Short-circuit: if default policy is allow-all and no Cedar policies are loaded,
+      // skip Cedar evaluation entirely (Cedar is deny-by-default with no policies)
+      const effectiveDefault = config.defaultPolicy ?? "allow-all";
+      const policies = cedar.getPolicies?.() ?? [];
+      if (effectiveDefault === "allow-all" && policies.length === 0) {
+        logger.info(`✅ [Carapace] ALLOW (no policies, default allow-all): ${toolName}`);
+        return {};
+      }
+
       const decision = await cedar.authorize({
         principal: `Agent::"openclaw"`,
         action: `Action::"${action}"`,
         resource: `${resourceType}::"${resourceId}"`,
         context,
       });
+
+      // If Cedar returns no definitive decision and default is allow-all, allow
+      if (effectiveDefault === "allow-all" && decision.decision !== "deny") {
+        return {};
+      }
 
       const auditEntry = {
         timestamp: new Date().toISOString(),
@@ -171,6 +188,9 @@ export default function register(api: OpenClawPluginApi) {
       }
 
       return {};
+    }, {
+      name: "carapace.cedar-enforcement",
+      description: "Cedar policy enforcement for all tool calls",
     });
     logger.info("Registered before_tool_call hook for Cedar policy enforcement");
   } else {
