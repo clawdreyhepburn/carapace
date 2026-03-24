@@ -2,7 +2,7 @@
   "id": "carapace",
   "name": "Carapace",
   "description": "Cedar policy enforcement for agent tool access via before_tool_call hook. Your agent's exoskeleton.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,

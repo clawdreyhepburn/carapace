@@ -107,12 +107,9 @@ export default function register(api: OpenClawPluginApi) {
   // --- Register before_tool_call hook ---
   if (api.on) {
     api.on("before_tool_call", async (event: any) => {
-      logger.info(`[Carapace] HOOK FIRED: keys=${JSON.stringify(Object.keys(event))}`);
-      logger.info(`[Carapace] before_tool_call fired: ${JSON.stringify(Object.keys(event))}`);
       const toolName: string = event.toolName ?? event.tool ?? event.name ?? "";
       const params: Record<string, unknown> = event.params ?? event.arguments ?? event.input ?? {};
 
-      logger.info(`[Carapace] tool=${toolName} defaultPolicy=${config.defaultPolicy ?? "allow-all"}`);
       if (!toolName) return {};
 
       stats.toolCallsEvaluated++;
