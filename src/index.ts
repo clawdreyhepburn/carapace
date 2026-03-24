@@ -228,6 +228,41 @@ export default function register(api: OpenClawPluginApi) {
       writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
     }
 
+    // Also patch the per-agent models.json (this is what OpenClaw actually reads at runtime)
+    // openclaw.json models.providers gets merged INTO models.json on restart,
+    // but if someone restores openclaw.json from backup, models.json keeps the stale baseUrl.
+    // So we patch both files for safety.
+    const agentModelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
+    if (existsSync(agentModelsPath)) {
+      try {
+        const agentModels = JSON.parse(readFileSync(agentModelsPath, "utf-8"));
+        let agentModelsChanged = false;
+        if (!agentModels.providers) agentModels.providers = {};
+        for (const provider of providers) {
+          if (!agentModels.providers[provider]) agentModels.providers[provider] = {};
+          if (agentModels.providers[provider].baseUrl !== proxyUrl) {
+            if (agentModels.providers[provider].baseUrl && agentModels.providers[provider].baseUrl !== proxyUrl) {
+              agentModels.providers[provider]._originalBaseUrl = agentModels.providers[provider].baseUrl;
+            }
+            agentModels.providers[provider].baseUrl = proxyUrl;
+            agentModelsChanged = true;
+          }
+        }
+        if (agentModelsChanged) {
+          // Backup models.json before modifying
+          const modelsBackup = agentModelsPath + ".carapace-backup";
+          if (!existsSync(modelsBackup)) {
+            const { copyFileSync } = require("node:fs");
+            copyFileSync(agentModelsPath, modelsBackup);
+          }
+          writeFileSync(agentModelsPath, JSON.stringify(agentModels, null, 2) + "\n", "utf-8");
+          patched.push(...providers.map(p => `models.json:${p}`));
+        }
+      } catch (e: any) {
+        logger.warn(`Failed to patch agent models.json: ${e.message}`);
+      }
+    }
+
     return { patched, alreadySet };
   }
 
@@ -706,6 +741,68 @@ export default function register(api: OpenClawPluginApi) {
               }
               if (Object.keys(cfg.models.providers).length === 0) delete cfg.models.providers;
               if (cfg.models && Object.keys(cfg.models).length === 0) delete cfg.models;
+            }
+
+            // Also clean up the per-agent models.json
+            const agentModelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
+            if (existsSync(agentModelsPath)) {
+              try {
+                const agentModels = JSON.parse(readFileSync(agentModelsPath, "utf-8"));
+                let modelsChanged = false;
+                if (agentModels.providers) {
+                  for (const [name, provCfg] of Object.entries(agentModels.providers)) {
+                    if ((provCfg as any)?.baseUrl === proxyUrl) {
+                      if ((provCfg as any)._originalBaseUrl) {
+                        (provCfg as any).baseUrl = (provCfg as any)._originalBaseUrl;
+                        delete (provCfg as any)._originalBaseUrl;
+                      } else {
+                        delete (provCfg as any).baseUrl;
+                      }
+                      if (Object.keys(provCfg as any).length === 0) delete agentModels.providers[name];
+                      modelsChanged = true;
+                      console.log(`  ✅ Cleaned proxy baseUrl from models.json for ${name}`);
+                    }
+                  }
+                }
+                if (modelsChanged) {
+                  writeFileSync(agentModelsPath, JSON.stringify(agentModels, null, 2) + "\n", "utf-8");
+                  changed = true;
+                }
+              } catch (e: any) {
+                console.log(`  ⚠️  Could not clean models.json: ${e.message}`);
+              }
+            }
+
+            // Clean up per-agent models.json (this is what actually routes API calls)
+            const agentModelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
+            if (existsSync(agentModelsPath)) {
+              try {
+                const agentModels = JSON.parse(readFileSync(agentModelsPath, "utf-8"));
+                let modelsChanged = false;
+                if (agentModels.providers) {
+                  for (const [name, provCfg] of Object.entries(agentModels.providers)) {
+                    if ((provCfg as any)?.baseUrl === proxyUrl) {
+                      if ((provCfg as any)._originalBaseUrl) {
+                        (provCfg as any).baseUrl = (provCfg as any)._originalBaseUrl;
+                        delete (provCfg as any)._originalBaseUrl;
+                      } else {
+                        delete (provCfg as any).baseUrl;
+                      }
+                      // Remove empty provider entries (but keep ones with other config)
+                      const remaining = Object.keys(provCfg as any).filter(k => k !== 'models' || (provCfg as any).models?.length > 0);
+                      if (remaining.length === 0) delete agentModels.providers[name];
+                      modelsChanged = true;
+                      console.log(`  ✅ Cleaned proxy baseUrl from models.json (${name})`);
+                    }
+                  }
+                }
+                if (modelsChanged) {
+                  writeFileSync(agentModelsPath, JSON.stringify(agentModels, null, 2) + "\n", "utf-8");
+                  changed = true;
+                }
+              } catch (e: any) {
+                console.log(`  ⚠️  Could not clean models.json: ${e.message}`);
+              }
             }
 
             // Disable the plugin entry (don't delete — user might want to re-enable)
