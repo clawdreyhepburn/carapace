@@ -105,8 +105,8 @@ export default function register(api: OpenClawPluginApi) {
   };
 
   // --- Register before_tool_call hook ---
-  if (api.registerHook) {
-    api.registerHook("before_tool_call", async (event: any) => {
+  if (api.on) {
+    api.on("before_tool_call", async (event: any) => {
       const toolName: string = event.toolName ?? event.tool ?? event.name ?? "";
       const params: Record<string, unknown> = event.params ?? event.arguments ?? event.input ?? {};
 
