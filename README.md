@@ -18,10 +18,6 @@
 
 ---
 
-<p align="center">
-  <img src="docs/carapace_proxy_tool_filter_flow_v3.svg" alt="Carapace proxy filtering tool calls" width="700">
-</p>
-
 ## What is Carapace?
 
 AI agents can do a lot. They can read and write files, run shell commands, call APIs, send emails, push code — anything you give them access to. That's powerful, but it's also dangerous. An agent that can delete files can delete *all* files. An agent that can call APIs can send your data anywhere.
@@ -36,7 +32,7 @@ Carapace gates three types of operations:
 
 | What | How it works | Example |
 |------|-------------|---------|
-| **MCP tools** | Your agent connects to external tool servers (file system, GitHub, databases) via [MCP](https://modelcontextprotocol.io/). Carapace checks each tool call against your policies before it reaches the server. | Allow `read_file`, block `write_file` |
+| **MCP tools** | Your agent connects to external tool servers (file system, GitHub, databases) via [MCP](https://modelcontextprotocol.io/). Carapace checks each tool call against your policies before it executes. | Allow `read_file`, block `write_file` |
 | **Shell commands** | Your agent runs commands on your computer. Carapace checks which program the agent is trying to run. | Allow `git` and `ls`, block `rm` and `sudo` |
 | **API calls** | Your agent makes HTTP requests to websites and services. Carapace checks which domain the agent is trying to reach. | Allow `api.github.com`, block `pastebin.com` |
 
@@ -70,45 +66,36 @@ Carapace uses [Cedarling](https://github.com/JanssenProject/jans/tree/main/jans-
 
 ### What is MCP?
 
-[MCP (Model Context Protocol)](https://modelcontextprotocol.io/) is an open standard for connecting AI agents to tools. An MCP server provides tools (like "read a file" or "search a database"), and the agent calls those tools to get work done. Carapace sits between the agent and the MCP servers, checking every tool call against your policies.
+[MCP (Model Context Protocol)](https://modelcontextprotocol.io/) is an open standard for connecting AI agents to tools. An MCP server provides tools (like "read a file" or "search a database"), and the agent calls those tools to get work done. Carapace evaluates Cedar policies before each tool call executes, blocking anything your policies don't allow.
 
 ---
 
 ## How It Works
 
-Carapace has two enforcement modes. You can use either or both.
-
-### Mode 1: LLM Proxy (recommended — strongest protection)
-
-This is the most secure setup. Here's what happens:
-
-1. Your agent talks to an AI model (like Claude) to figure out what to do.
-2. The AI model responds with instructions like "call the `exec` tool with command `rm -rf /tmp`."
-3. **Normally**, your agent platform would immediately execute that instruction.
-4. **With Carapace**, the AI model's response goes through Carapace first. Carapace reads every tool call in the response, checks it against your Cedar policies, and **removes any tool calls that aren't allowed.**
-5. Your agent platform only sees the filtered response — it never even knows the AI tried to do something forbidden.
-
-This works because Carapace intercepts the response before your agent platform processes it. The `setup` command automatically points your provider at Carapace's local proxy, so all LLM traffic flows through Cedar.
+Carapace registers a `before_tool_call` hook in OpenClaw's plugin system. Every time the agent tries to use a tool — any tool — OpenClaw calls Carapace first. Carapace evaluates the call against your Cedar policies and either allows it or blocks it.
 
 ```
-Your agent  →  Carapace proxy (localhost)  →  Anthropic/OpenAI API
-                      ↓
-                Cedar checks each
-                tool call in the
-                AI's response
-                      ↓
-                Denied calls are
-                removed before your
-                agent sees them
+Agent decides to call a tool
+        ↓
+OpenClaw fires before_tool_call hook
+        ↓
+Carapace receives { toolName, params }
+        ↓
+Cedar evaluates the call against your policies
+        ↓
+ ALLOW → tool executes normally
+ DENY  → tool call is blocked, agent gets an error
 ```
 
-**Supports:** Anthropic (Claude) and OpenAI (GPT) APIs, both streaming and non-streaming.
+This is simple and un-bypassable — every tool call in OpenClaw goes through the hook system. There's no way for the agent to skip it because the enforcement happens inside the runtime, before the tool code runs.
 
-### Mode 2: Tool-level gating (simpler, weaker)
+### What gets checked
 
-Carapace registers its own versions of common tools (`carapace_exec` for shell commands, `carapace_fetch` for API calls, `mcp_call` for MCP tools). These check Cedar policies before doing anything. You then disable the built-in versions so the agent is forced to use Carapace's gated versions.
+When Carapace receives a tool call, it maps it to one of three resource types:
 
-This is simpler to set up but weaker — it relies on the agent using the right tools. The LLM proxy is better because it's un-bypassable.
+- **`exec` / `process`** → **Shell**: extracts the binary name from the command (e.g., `git`, `rm`, `curl`)
+- **`web_fetch` / `web_search`** → **API**: extracts the hostname from the URL (e.g., `api.github.com`, `pastebin.com`)
+- **Everything else** (MCP tools, browser actions, etc.) → **Tool**: uses the tool name directly (e.g., `mcp_call/github/create_issue`, `browser`)
 
 ### The Control GUI
 
@@ -127,37 +114,32 @@ Open it at [http://localhost:19820](http://localhost:19820) after starting Carap
 ## Architecture
 
 ```
-                    +----------------------------+
-                    |         Carapace           |
-+-------------+     |                            |     +------------------+
-|             |     |  +----------------------+  |     |   Anthropic /    |
-|  OpenClaw   |---->|  |    LLM Proxy         |  |---->|   OpenAI API     |
-|  Agent      |     |  | (intercepts tool_use)|  |     +------------------+
-|             |     |  +----------------------+  |
-|             |     |           |                |     +-----------------+
-|             |     |     Cedar evaluates        |     |  MCP Server A   |
-|             |     |     every tool call        |---->|  (filesystem)   |
-|             |     |           |                |     +-----------------+
-|             |     |  +----------------------+  |     |  MCP Server B   |
-|             |     |  |   Cedarling WASM      |  |---->|  (GitHub)       |
-|             |     |  |   (Cedar 4.4.2)       |  |     +-----------------+
-|             |     |  +----------------------+  |
-|             |     |  +----------------------+  |
-|             |     |  |  Local Control GUI    |  |
-+-------------+     |  +----------------------+  |
-                    +--------------+--------------+
-                                   |
-                            +------+------+
-                            |    Human    |
-                            |  (browser)  |
-                            +-------------+
++-------------+        +----------------------------+        +-----------------+
+|             |        |         Carapace           |        |  MCP Server A   |
+|  OpenClaw   |------->|  before_tool_call hook     |------->|  (filesystem)   |
+|  Agent      |        |         |                  |        +-----------------+
+|             |        |   Cedar evaluates          |        |  MCP Server B   |
+|             |        |   every tool call          |------->|  (GitHub)       |
+|             |        |         |                  |        +-----------------+
+|             |        |  +----------------------+  |
+|             |        |  |   Cedarling WASM      |  |
+|             |        |  |   (Cedar 4.4.2)       |  |
+|             |        |  +----------------------+  |
+|             |        |  +----------------------+  |
+|             |        |  |  Local Control GUI    |  |
++-------------+        |  +----------------------+  |
+                       +--------------+--------------+
+                                      |
+                               +------+------+
+                               |    Human    |
+                               |  (browser)  |
+                               +-------------+
 ```
 
 **Key components:**
 
-- **LLM Proxy** — Sits between your agent and the AI model. Intercepts tool calls in the AI's response and filters out denied ones.
+- **`before_tool_call` hook** — Registered in OpenClaw's plugin system. Every tool call passes through this hook before executing. Denied calls never reach the tool.
 - **Cedarling WASM** — The Cedar policy engine, running as WebAssembly for near-native speed. This is where your policies are evaluated.
-- **MCP Aggregator** — Connects to your upstream MCP servers, discovers their tools, and proxies calls through Cedar.
 - **Control GUI** — A local web dashboard for managing tools and policies. Single HTML file, no build step, dark theme.
 
 ---
@@ -199,81 +181,21 @@ View and edit the Cedar schema that defines your policy types and actions.
 openclaw plugins install @clawdreyhepburn/carapace
 ```
 
-### Step 2: Choose your enforcement mode
+### Step 2: Enable Carapace
 
-Carapace has two modes. Pick one (or use both for defense in depth).
-
-#### Option A: LLM Proxy (recommended — strongest protection)
-
-The proxy sits between your agent and the AI model. It holds the real API key, intercepts every tool call in the AI's response, and removes anything your policies don't allow. **The agent can't bypass this because it never has the real API key.**
-
-Add these sections to your `~/.openclaw/openclaw.json`:
-
-**1. Add the Carapace plugin** (under `plugins.entries`):
-
-```json
-"carapace": {
-  "enabled": true,
-  "config": {
-    "guiPort": 19820,
-    "defaultPolicy": "allow-all",
-    "proxy": {
-      "enabled": true,
-      "port": 19821,
-      "upstream": {
-        "anthropic": {
-          "apiKey": "sk-ant-your-real-api-key-here"
-        }
-      }
-    },
-    "servers": {
-      "filesystem": {
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
-      }
-    }
-  }
-}
-```
-
-For **OpenAI** models, use `"openai"` instead of `"anthropic"` in the upstream block.
-
-**2. Run setup:**
+Run the setup command:
 
 ```bash
 openclaw carapace setup
-openclaw gateway restart
 ```
 
-This automatically:
-- Points your LLM provider at the Carapace proxy (sets `models.providers.<provider>.baseUrl`)
-- Denies built-in tools that would bypass Cedar (`exec`, `web_fetch`, `web_search`)
+That's it. This enables the Carapace plugin in your OpenClaw config (`plugins.entries.carapace`). The plugin loads automatically via config watcher — no restart needed.
 
-Your existing API key environment variable (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) still works — the proxy replaces the auth header when forwarding. You don't need to move any keys around.
-
-**3. Verify:**
+If you want to verify:
 
 ```bash
-curl http://127.0.0.1:19821/health
-# Should return: {"ok":true,"stats":{"requests":0,...}}
-
-openclaw carapace check
-# Should return: ✅ No bypass vulnerabilities found.
+openclaw carapace status
 ```
-
-#### Option B: Tool-level gating (without proxy)
-
-If you don't want to proxy LLM traffic, just omit the `proxy` section from the config above. Then run:
-
-```bash
-openclaw carapace setup
-openclaw gateway restart
-```
-
-This denies built-in tools (`exec`, `web_fetch`, `web_search`) so the agent must use Carapace's Cedar-gated versions instead.
-
-> ⚠️ **Without the proxy, this relies on the agent using the right tools.** The proxy (Option A) is stronger because it's un-bypassable.
 
 ### Step 3: Open the dashboard
 
@@ -281,22 +203,16 @@ Go to [http://localhost:19820](http://localhost:19820) to see your tools, manage
 
 ### Uninstalling
 
-Carapace modifies your OpenClaw config during setup (denying built-in tools, adding proxy baseUrl overrides). The uninstall command reverses all of it:
-
 ```bash
 openclaw carapace uninstall
-openclaw gateway restart
 ```
 
-This will:
-- Restore the built-in `exec`, `web_fetch`, and `web_search` tools (removes them from `tools.deny`)
-- Remove the proxy baseUrl override so your provider connects directly to its API again
-- Disable the Carapace plugin in config
+This disables the Carapace plugin in your config. That's all — no other config changes to clean up.
 
 To fully remove the plugin files:
 
 ```bash
-rm -rf ~/.openclaw/extensions/carapace
+openclaw plugins remove @clawdreyhepburn/carapace
 ```
 
 ### For development
@@ -397,7 +313,7 @@ Most people should stay at step 3. Step 4 is for when you really understand your
 - **Malicious MCP servers** — Carapace trusts the MCP servers themselves. If a server lies about what a tool does, Carapace can't detect that.
 - **Argument-level abuse** — Carapace checks *which* command runs (e.g., `git`), not *how* it's used (e.g., `git push --force`). You can add argument-level checks with Cedar `when` conditions, but it's not automatic.
 - **Permitted binary abuse** — If you permit `node`, the agent can run `node -e "require('child_process').execSync('rm -rf /')"`. Permitting a language runtime is effectively permitting everything. See [Dangerous Permits](docs/SECURITY.md#dangerous-permits).
-- **Code that runs outside the LLM** — OpenClaw hooks and plugins run directly in the process, not through the AI model. Carapace can't gate those. See [Enforcement Coverage](docs/SECURITY.md#enforcement-coverage).
+- **Code that runs outside tool calls** — OpenClaw hooks and plugins run directly in the process, not through tool calls. Carapace can't gate those. See [Enforcement Coverage](docs/SECURITY.md#enforcement-coverage).
 
 ### GUI security
 
@@ -412,35 +328,19 @@ The dashboard runs on `localhost` only — it's not accessible from the network.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `guiPort` | number | `19820` | Port for the control dashboard |
-| `servers` | object | `{}` | MCP servers to connect to (see Quick Start) |
 | `policyDir` | string | `~/.openclaw/mcp-policies/` | Where Cedar policy files are stored |
 | `defaultPolicy` | `"allow-all"` or `"deny-all"` | `"allow-all"` | Starting posture. `allow-all` is safe to install — nothing breaks. `deny-all` requires explicit permits for every tool. |
 | `verify` | boolean | `false` | Validate policies on every change |
-| `proxy.enabled` | boolean | `false` | Enable the LLM proxy |
-| `proxy.port` | number | `19821` | Port for the LLM proxy |
-| `proxy.upstream.anthropic.apiKey` | string | — | Your real Anthropic API key |
-| `proxy.upstream.anthropic.url` | string | `https://api.anthropic.com` | Anthropic API base URL |
-| `proxy.upstream.openai.apiKey` | string | — | Your real OpenAI API key |
-| `proxy.upstream.openai.url` | string | `https://api.openai.com` | OpenAI API base URL |
-
-### MCP server config
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `transport` | `"stdio"` | How to connect (stdio is currently supported) |
-| `command` | string | Program to run |
-| `args` | string[] | Command-line arguments |
-| `env` | object | Environment variables |
 
 ### CLI commands
 
 ```bash
-openclaw carapace setup     # Configure OpenClaw (proxy baseUrl + deny bypass tools)
-openclaw carapace check     # Check for bypass vulnerabilities
-openclaw carapace status    # Show connected servers, tool counts, proxy status
+openclaw carapace setup     # Enable the Carapace plugin
+openclaw carapace check     # Check for configuration issues
+openclaw carapace status    # Show tool counts and policy status
 openclaw carapace tools     # List all tools with enabled/disabled status
 openclaw carapace verify    # Validate all policies
-openclaw carapace uninstall # Reverse all config changes, restore built-in tools
+openclaw carapace uninstall # Disable the plugin
 ```
 
 ---
@@ -452,7 +352,7 @@ git clone https://github.com/clawdreyhepburn/carapace.git
 cd carapace
 npm install
 
-# Run the test harness (2 MCP servers + GUI on port 19820)
+# Run the test harness (GUI on port 19820)
 npx tsx test/harness.ts
 
 # Type check
@@ -460,7 +360,6 @@ npx tsc --noEmit
 
 # Run the full test suite
 npx tsx test/test-shell-gate.mjs      # Shell gating (9 tests)
-npx tsx test/test-llm-proxy.mjs       # LLM proxy filtering (10 tests)
 npx tsx test/test-adversarial.mjs     # Adversarial bypass attempts (30+9 tests)
 npx tsx test/test-block-myself.mjs    # End-to-end cp block demo
 ```
@@ -470,12 +369,10 @@ npx tsx test/test-block-myself.mjs    # End-to-end cp block demo
 ```
 carapace/
 ├── src/
-│   ├── index.ts                  # OpenClaw plugin entry — registers tools, services, CLI
-│   ├── llm-proxy.ts              # LLM proxy — intercepts tool calls in AI responses
+│   ├── index.ts                  # OpenClaw plugin entry — registers before_tool_call hook
 │   ├── cedar-engine-cedarling.ts # Cedarling WASM engine — real Cedar 4.4.2 evaluation
 │   ├── cedar-engine.ts           # Fallback engine (string matching, no WASM needed)
-│   ├── mcp-aggregator.ts         # Connects to MCP servers, discovers tools, proxies calls
-│   ├── policy-source.ts           # PolicySource for OVID-ME integration
+│   ├── policy-source.ts          # PolicySource for OVID-ME integration
 │   ├── types.ts                  # Shared TypeScript types
 │   └── gui/
 │       ├── server.ts             # HTTP server for the dashboard
@@ -483,7 +380,6 @@ carapace/
 ├── test/
 │   ├── harness.ts                # Standalone test environment
 │   ├── test-shell-gate.mjs       # Shell command authorization tests
-│   ├── test-llm-proxy.mjs        # LLM proxy interception tests
 │   ├── test-adversarial.mjs      # Adversarial bypass test suite
 │   └── test-block-myself.mjs     # End-to-end demo: block cp, try to copy, get denied
 ├── docs/

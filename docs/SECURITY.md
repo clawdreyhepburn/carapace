@@ -8,124 +8,45 @@ Step-by-step instructions for locking down Carapace on macOS, Linux, and Windows
 
 ## Table of Contents
 
-- [Step 1: Enable the LLM Proxy](#step-1-enable-the-llm-proxy)
-- [Step 2: Close the Tool Bypass Gap](#step-2-close-the-tool-bypass-gap)
-- [Step 3: Protect OpenClaw System Directories](#step-3-protect-openclaw-system-directories)
-- [Step 4: Protect Credentials](#step-4-protect-credentials)
-- [Step 5: Restrict File Writing](#step-5-restrict-file-writing)
-- [Step 6: Verify Your Setup](#step-6-verify-your-setup)
+- [Step 1: Enable Carapace](#step-1-enable-carapace)
+- [Step 2: Protect OpenClaw System Directories](#step-2-protect-openclaw-system-directories)
+- [Step 3: Protect Credentials](#step-3-protect-credentials)
+- [Step 4: Restrict File Writing](#step-4-restrict-file-writing)
+- [Step 5: Verify Your Setup](#step-5-verify-your-setup)
 - [What Carapace Covers (and What It Doesn't)](#enforcement-coverage)
 - [Dangerous Permits](#dangerous-permits)
 - [Threat Model Spectrum](#threat-model-spectrum)
 
 ---
 
-## Step 1: Enable the LLM Proxy
+## Step 1: Enable Carapace
 
-The LLM Proxy is the strongest enforcement mode. Carapace holds the real API key and intercepts every tool call the LLM suggests — before OpenClaw can execute it.
+Carapace enforces Cedar policies via OpenClaw's `before_tool_call` hook. Every tool call the agent makes — shell commands, API requests, MCP tools, browser actions — passes through Carapace before executing. Denied calls are blocked before the tool code runs.
 
-**Without the proxy, the agent can bypass Cedar by using built-in tools directly.**
-
-### Configuration
-
-Add the Carapace plugin to your OpenClaw config (`~/.openclaw/openclaw.json`), under `plugins.entries`:
-
-```json
-"carapace": {
-  "enabled": true,
-  "config": {
-    "proxy": {
-      "enabled": true,
-      "port": 19821,
-      "upstream": {
-        "anthropic": {
-          "apiKey": "sk-ant-your-real-api-key-here"
-        }
-      }
-    }
-  }
-}
-```
-
-For OpenAI models, use `"openai"` instead of `"anthropic"` in the upstream block.
-
-Then run setup — it automatically points your LLM provider at the proxy:
+### Installation
 
 ```bash
+openclaw plugins install @clawdreyhepburn/carapace
 openclaw carapace setup
-openclaw gateway restart
 ```
 
-### API keys
-
-Your existing `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable still works — the proxy replaces the auth header when forwarding, so there's no conflict. You don't need to move any keys around.
-
-If you want extra security, you can optionally move the key into the Carapace plugin config and unset the environment variable. This prevents the agent from reading the key via `printenv`. But it's not required for the proxy to work.
-
----
-
-## Step 2: Close the Tool Bypass Gap
-
-Even with the proxy, it's good defense-in-depth to deny the built-in tools that overlap with Carapace's Cedar-gated versions.
-
-### Automatic setup
-
-If you already ran `openclaw carapace setup` in Step 1, this is already done — setup handles both the proxy baseUrl and the tool deny list. You can verify with:
-
-```bash
-openclaw carapace check
-# Expected: ✅ No bypass vulnerabilities found.
-```
-
-If you skipped Step 1 or want to run it again:
-
-```bash
-openclaw carapace setup
-openclaw gateway restart
-```
-
-This adds `exec`, `web_fetch`, and `web_search` to `tools.deny` in your config (and sets the proxy baseUrl if the proxy is enabled).
-
-### Manual setup
-
-If you prefer to do it yourself:
-
-**macOS / Linux:**
-
-```bash
-# Check current config
-cat ~/.openclaw/openclaw.json | python3 -c "
-import sys, json
-cfg = json.load(sys.stdin)
-denied = cfg.get('tools', {}).get('deny', [])
-print('Currently denied:', denied or '(none)')
-for t in ['exec', 'web_fetch', 'web_search']:
-    print(f'  {t}: {\"✅ denied\" if t in denied else \"⚠️ NOT denied\"}')"
-```
-
-**Windows (PowerShell):**
-
-```powershell
-$cfg = Get-Content "$env:USERPROFILE\.openclaw\openclaw.json" | ConvertFrom-Json
-$denied = $cfg.tools.deny
-@("exec", "web_fetch", "web_search") | ForEach-Object {
-    $status = if ($denied -contains $_) { "denied" } else { "NOT denied" }
-    Write-Host "  $_`: $status"
-}
-```
+That's it. The setup command enables the plugin in your OpenClaw config. It loads automatically — no restart needed.
 
 ### Verify
 
 ```bash
+openclaw carapace status
+# Should show: plugin enabled, policies loaded
+
 openclaw carapace check
-# Expected: ✅ No bypass vulnerabilities found.
+# Expected: ✅ No configuration issues found.
 ```
 
 ---
 
-## Step 3: Protect OpenClaw System Directories
+## Step 2: Protect OpenClaw System Directories
 
-**This is critical.** If the agent can write to OpenClaw's hooks, extensions, or config directories, it can plant code that runs outside Cedar — no LLM involved, no proxy intercept.
+**This is critical.** If the agent can write to OpenClaw's hooks, extensions, or config directories, it can plant code that runs outside Cedar — no tool call involved, no hook intercept.
 
 ### What to protect
 
@@ -133,7 +54,7 @@ openclaw carapace check
 |-----------|-----------------|
 | `~/.openclaw/hooks/` | Agent plants a hook that runs `execSync()` on every message |
 | `~/.openclaw/extensions/` | Agent installs a plugin with arbitrary code |
-| `~/.openclaw/openclaw.json` | Agent disables Carapace or changes the provider URL |
+| `~/.openclaw/openclaw.json` | Agent disables Carapace or changes config |
 | `~/.openclaw/cron/` | Agent creates cron jobs (less risky — they go through the LLM) |
 | `<workspace>/BOOT.md` | Agent injects startup instructions (goes through LLM — lower risk) |
 | `<workspace>/HEARTBEAT.md` | Agent injects heartbeat instructions (goes through LLM — lower risk) |
@@ -142,7 +63,6 @@ openclaw carapace check
 
 ```bash
 # Make hook and extension directories immutable
-# (create them first if they don't exist)
 mkdir -p ~/.openclaw/hooks ~/.openclaw/extensions
 
 # Remove write permission
@@ -229,7 +149,7 @@ Set-ItemProperty "$env:USERPROFILE\.openclaw\openclaw.json" -Name IsReadOnly -Va
 
 ---
 
-## Step 4: Protect Credentials
+## Step 3: Protect Credentials
 
 The agent shouldn't be able to read API keys, SSH keys, or secrets.
 
@@ -246,11 +166,6 @@ chmod 600 ~/.aws/credentials ~/.aws/config 2>/dev/null
 # Protect environment files
 find ~ -maxdepth 3 -name ".env" -exec chmod 600 {} \; 2>/dev/null
 find ~ -maxdepth 3 -name ".env.*" -exec chmod 600 {} \; 2>/dev/null
-
-# If running the agent as a separate user (recommended for production):
-# The agent user shouldn't be in your group or have read access to your home
-sudo dscl . -create /Users/openclaw-agent
-# ... (full user creation depends on your setup)
 ```
 
 ### Linux
@@ -319,9 +234,9 @@ forbid(
 
 ---
 
-## Step 5: Restrict File Writing
+## Step 4: Restrict File Writing
 
-If the agent can write files, it can plant hooks, modify configs, or create exfiltration scripts. Even with the proxy catching tool calls, an agent with `filesystem/write_file` access can write to dangerous paths.
+If the agent can write files, it can plant hooks, modify configs, or create exfiltration scripts. Even with Carapace gating tool calls, an agent with `filesystem/write_file` access can write to dangerous paths.
 
 ### Cedar policies
 
@@ -349,7 +264,6 @@ For maximum isolation, run the agent in a restricted environment:
 **macOS (sandbox-exec — deprecated but functional):**
 
 ```bash
-# Create a sandbox profile that restricts writes
 cat > /tmp/openclaw-sandbox.sb << 'EOF'
 (version 1)
 (allow default)
@@ -361,18 +275,14 @@ cat > /tmp/openclaw-sandbox.sb << 'EOF'
 )
 EOF
 
-# Run OpenClaw in the sandbox
 sandbox-exec -f /tmp/openclaw-sandbox.sb -D HOME="$HOME" openclaw gateway start
 ```
 
 **Linux (firejail):**
 
 ```bash
-# Install firejail
 sudo apt install firejail  # Debian/Ubuntu
-sudo dnf install firejail  # Fedora
 
-# Create a Carapace profile
 cat > ~/.config/firejail/openclaw.profile << 'EOF'
 include /etc/firejail/default.profile
 read-only ${HOME}/.openclaw/hooks
@@ -383,14 +293,12 @@ read-only ${HOME}/.aws
 blacklist ${HOME}/.gnupg/private-keys-v1.d
 EOF
 
-# Run OpenClaw sandboxed
 firejail --profile=openclaw openclaw gateway start
 ```
 
 **Linux (Docker — strongest isolation):**
 
 ```bash
-# Run OpenClaw in a container with read-only mounts for sensitive paths
 docker run -d \
   --name openclaw \
   -v ~/.openclaw/openclaw.json:/home/agent/.openclaw/openclaw.json:ro \
@@ -398,42 +306,34 @@ docker run -d \
   -v ~/.openclaw/extensions:/home/agent/.openclaw/extensions:ro \
   -v ~/.openclaw/workspace:/home/agent/.openclaw/workspace \
   -p 19820:19820 \
-  -p 19821:19821 \
   openclaw/openclaw
 ```
 
 **Windows (restricted user):**
 
 ```powershell
-# Create a restricted user for the agent
 net user openclaw-agent RandomP@ss123 /add
-# Remove from Administrators, add to Users only
 net localgroup Users openclaw-agent /add
-
-# Run OpenClaw as the restricted user
 runas /user:openclaw-agent "openclaw gateway start"
-
-# The restricted user won't have write access to your profile directories
-# You may need to grant read access to the OpenClaw config
 icacls "$env:USERPROFILE\.openclaw\openclaw.json" /grant "openclaw-agent:R"
 ```
 
 ---
 
-## Step 6: Verify Your Setup
+## Step 5: Verify Your Setup
 
 Run this checklist after completing the steps above.
 
 ### Quick check (all platforms)
 
 ```bash
-# 1. Is the proxy running?
-curl http://127.0.0.1:19821/health
-# Expected: {"ok":true,"stats":{...}}
+# 1. Is Carapace enabled?
+openclaw carapace status
+# Expected: plugin enabled, hook registered
 
-# 2. Are bypass tools denied?
+# 2. Any configuration issues?
 openclaw carapace check
-# Expected: ✅ No bypass vulnerabilities found.
+# Expected: ✅ No configuration issues found.
 
 # 3. Is the config protected?
 # macOS/Linux:
@@ -448,10 +348,10 @@ ls -la ~/.openclaw/hooks ~/.openclaw/extensions
 ### Windows quick check
 
 ```powershell
-# 1. Is the proxy running?
-Invoke-RestMethod http://127.0.0.1:19821/health
+# 1. Is Carapace enabled?
+openclaw carapace status
 
-# 2. Are bypass tools denied?
+# 2. Any configuration issues?
 openclaw carapace check
 
 # 3. Is the config read-only?
@@ -474,17 +374,17 @@ cd carapace && npx tsx test/test-adversarial.mjs
 
 | Execution path | Goes through Cedar? | Notes |
 |---|---|---|
-| Agent tool calls via LLM | ✅ Yes (proxy) | The main enforcement point |
-| Cron job agent turns | ✅ Yes (proxy) | Same LLM provider config |
-| Sub-agent sessions | ✅ Yes (proxy) | Same LLM provider config |
-| Heartbeat agent turns | ✅ Yes (proxy) | Same LLM provider config |
-| BOOT.md instructions | ✅ Yes (proxy) | Processed by agent runner |
-| Hooks (handler.ts) | ❌ **No** | Run in-process, no LLM |
+| Agent tool calls | ✅ Yes (before_tool_call hook) | The main enforcement point |
+| Cron job agent turns | ✅ Yes (hook) | Same plugin, same hook |
+| Sub-agent sessions | ✅ Yes (hook) | Same plugin, same hook |
+| Heartbeat agent turns | ✅ Yes (hook) | Same plugin, same hook |
+| BOOT.md instructions | ✅ Yes (hook) | Tool calls go through the hook |
+| Hooks (handler.ts) | ❌ **No** | Run in-process, no tool call |
 | Plugins (extensions) | ❌ **No** | Run in-process, trusted code |
 | OS-level cron (crontab) | ❌ **No** | Outside OpenClaw entirely |
 | Spawned child processes | ❌ **No** | From permitted binaries |
 
-**The bottom line:** With the LLM proxy enabled, Carapace covers everything that flows through the LLM. The gaps are code that runs directly — hooks, plugins, and child processes of permitted binaries. For those, use the OS-level protections described above.
+**The bottom line:** Carapace covers every tool call that goes through OpenClaw's tool system. The gaps are code that runs directly — hooks, plugins, and child processes of permitted binaries. For those, use the OS-level protections described above.
 
 ---
 

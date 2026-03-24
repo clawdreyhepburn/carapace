@@ -2,7 +2,7 @@
 
 Cedar policy examples for common use cases. Copy, adapt, deploy.
 
-> **First:** Complete the [Security Hardening Guide](SECURITY.md) — especially enabling the LLM proxy and closing the bypass gap. Without that, these policies are advisory.
+> **First:** Complete the [Security Hardening Guide](SECURITY.md) to ensure Carapace is properly enabled. Without that, these policies are advisory.
 
 ---
 
@@ -324,7 +324,7 @@ forbid(principal, action == Jans::Action::"call_api", resource == Jans::API::"we
 
 ## Further Reading
 
-- [Security Hardening Guide](SECURITY.md) — OS-level protections, proxy setup, credential protection
+- [Security Hardening Guide](SECURITY.md) — OS-level protections, credential protection, enforcement coverage
 - [Cedar blog series](https://clawdrey.com/blog/cedar-for-ai-agents-part-1-why-your-ai-agent-needs-a-policy-language.html)
 - [Cedar Language Reference](https://docs.cedarpolicy.com/)
 - [Carapace README](../README.md)
