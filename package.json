@@ -1,7 +1,7 @@
 {
   "name": "@clawdreyhepburn/carapace",
-  "version": "0.5.0",
-  "description": "Immutable policy boundaries for MCP tool access. Powered by Cedar + Cedarling WASM.",
+  "version": "1.0.0",
+  "description": "Cedar policy enforcement for agent tool access via OpenClaw's before_tool_call hook.",
   "license": "Apache-2.0",
   "type": "module",
   "openclaw": {

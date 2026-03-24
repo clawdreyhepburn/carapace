@@ -1,14 +1,13 @@
 /**
  * Carapace — OpenClaw Plugin
  *
- * Aggregates upstream MCP servers, enforces Cedar policies on tool access,
- * and serves a local GUI for human oversight.
+ * Enforces Cedar policies on tool access via OpenClaw's before_tool_call hook.
+ * No proxy, no baseUrl redirect, no models.json patching.
  */
 
 import { CedarlingEngine } from "./cedar-engine-cedarling.js";
 import { McpAggregator } from "./mcp-aggregator.js";
 import { ControlGui } from "./gui/server.js";
-import { LlmProxy } from "./llm-proxy.js";
 import type { PluginConfig } from "./types.js";
 
 export const id = "carapace";
@@ -16,7 +15,6 @@ export const name = "Carapace";
 
 /**
  * OpenClaw plugin API shape (matches real runtime).
- * We define it here to avoid depending on OpenClaw types at build time.
  */
 interface OpenClawPluginApi {
   pluginConfig: any;
@@ -37,48 +35,42 @@ interface OpenClawPluginApi {
     },
     opts?: { optional?: boolean },
   ): void;
+  registerHook?(hookName: string, handler: (event: any) => Promise<any> | any): void;
   registerCli?(fn: (ctx: { program: any }) => void, opts?: { commands: string[] }): void;
   registerGatewayMethod?(name: string, handler: (ctx: { respond: (ok: boolean, data: any) => void }) => void): void;
 }
 
 /**
- * Build upstream config from either string or object format.
- * String format: proxy.upstream = "https://api.anthropic.com", proxy.apiKey = "sk-..."
- * Object format: proxy.upstream = { anthropic: { url, apiKey }, openai: { url, apiKey } }
+ * @deprecated Kept for backward compatibility. No longer used.
  */
 function buildUpstreamConfig(proxyConfig: NonNullable<PluginConfig["proxy"]>): {
   anthropic?: { url: string; apiKey: string };
   openai?: { url: string; apiKey: string };
 } {
   const upstream = proxyConfig.upstream;
-
   if (!upstream) return {};
-
-  // String format: single upstream URL + flat apiKey
   if (typeof upstream === "string") {
     const apiKey = proxyConfig.apiKey ?? "";
-    const url = upstream;
-    // Guess provider from URL
-    if (url.includes("anthropic")) {
-      return { anthropic: { url, apiKey } };
-    } else if (url.includes("openai")) {
-      return { openai: { url, apiKey } };
-    }
-    // Default to anthropic
-    return { anthropic: { url, apiKey } };
+    if (upstream.includes("anthropic")) return { anthropic: { url: upstream, apiKey } };
+    if (upstream.includes("openai")) return { openai: { url: upstream, apiKey } };
+    return { anthropic: { url: upstream, apiKey } };
   }
-
-  // Object format: multi-provider
   return {
-    anthropic: upstream.anthropic ? {
-      url: upstream.anthropic.url ?? "https://api.anthropic.com",
-      apiKey: upstream.anthropic.apiKey,
-    } : undefined,
-    openai: upstream.openai ? {
-      url: upstream.openai.url ?? "https://api.openai.com",
-      apiKey: upstream.openai.apiKey,
-    } : undefined,
+    anthropic: upstream.anthropic ? { url: upstream.anthropic.url ?? "https://api.anthropic.com", apiKey: upstream.anthropic.apiKey } : undefined,
+    openai: upstream.openai ? { url: upstream.openai.url ?? "https://api.openai.com", apiKey: upstream.openai.apiKey } : undefined,
   };
+}
+
+// Audit log
+function appendAuditLog(entry: { timestamp: string; tool: string; decision: string; reasons: string[]; params?: any }): void {
+  try {
+    const { appendFileSync, mkdirSync } = require("node:fs");
+    const { join } = require("node:path");
+    const { homedir } = require("node:os");
+    const logDir = join(homedir(), ".openclaw", "mcp-policies", "logs");
+    mkdirSync(logDir, { recursive: true });
+    appendFileSync(join(logDir, "audit.log"), JSON.stringify(entry) + "\n", "utf-8");
+  } catch {}
 }
 
 export default function register(api: OpenClawPluginApi) {
@@ -98,172 +90,91 @@ export default function register(api: OpenClawPluginApi) {
     logger,
   });
 
-  // --- LLM Proxy: intercept tool calls at the API level ---
-  const proxyConfig = config.proxy;
-
   const gui = new ControlGui({
     port: config.guiPort ?? 19820,
     aggregator,
     cedar,
     logger,
-    proxyEnabled: !!proxyConfig?.enabled,
+    proxyEnabled: false, // proxy no longer used
   });
 
-  let proxy: LlmProxy | null = proxyConfig?.enabled ? new LlmProxy({
-    port: proxyConfig.port ?? 19821,
-    upstream: buildUpstreamConfig(proxyConfig),
-    cedar,
-    logger,
-  }) : null;
+  // --- Hook stats ---
+  const stats = {
+    toolCallsEvaluated: 0,
+    toolCallsDenied: 0,
+  };
 
-  // --- Bypass detection: warn if built-in tools aren't denied ---
-  const BYPASS_TOOLS = ["exec", "web_fetch", "web_search"];
+  // --- Register before_tool_call hook ---
+  if (api.registerHook) {
+    api.registerHook("before_tool_call", async (event: any) => {
+      const toolName: string = event.toolName ?? event.tool ?? event.name ?? "";
+      const params: Record<string, unknown> = event.params ?? event.arguments ?? event.input ?? {};
 
-  function checkForBypasses(): string[] {
-    // Read OpenClaw config to check tools.deny
-    try {
-      const { readFileSync, existsSync } = require("node:fs");
-      const { join } = require("node:path");
-      const { homedir } = require("node:os");
-      const configPath = join(homedir(), ".openclaw", "openclaw.json");
-      if (!existsSync(configPath)) return BYPASS_TOOLS;
-      const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
-      const denied: string[] = cfg.tools?.deny ?? [];
-      return BYPASS_TOOLS.filter((t) => !denied.includes(t));
-    } catch {
-      return BYPASS_TOOLS;
-    }
-  }
+      if (!toolName) return {};
 
-  function patchConfigDenyTools(): { patched: string[]; alreadyDenied: string[] } {
-    const { readFileSync, writeFileSync, existsSync } = require("node:fs");
-    const { join } = require("node:path");
-    const { homedir } = require("node:os");
-    const configPath = join(homedir(), ".openclaw", "openclaw.json");
+      stats.toolCallsEvaluated++;
 
-    let cfg: any = {};
-    if (existsSync(configPath)) {
-      cfg = JSON.parse(readFileSync(configPath, "utf-8"));
-    }
+      // Map tool call to Cedar authorization request
+      let resourceType = "Tool";
+      let action = "call_tool";
+      let resourceId = toolName;
+      let context: Record<string, unknown> = {};
 
-    if (!cfg.tools) cfg.tools = {};
-    if (!cfg.tools.deny) cfg.tools.deny = [];
-
-    const alreadyDenied = BYPASS_TOOLS.filter((t) => cfg.tools.deny.includes(t));
-    const toAdd = BYPASS_TOOLS.filter((t) => !cfg.tools.deny.includes(t));
-
-    for (const tool of toAdd) {
-      cfg.tools.deny.push(tool);
-    }
-
-    if (toAdd.length > 0) {
-      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
-    }
-
-    return { patched: toAdd, alreadyDenied };
-  }
-
-  function backupConfig(): void {
-    const { readFileSync, writeFileSync, existsSync, copyFileSync } = require("node:fs");
-    const { join } = require("node:path");
-    const { homedir } = require("node:os");
-    const configPath = join(homedir(), ".openclaw", "openclaw.json");
-    if (existsSync(configPath)) {
-      const backupPath = configPath + ".carapace-backup";
-      copyFileSync(configPath, backupPath);
-    }
-  }
-
-  function patchConfigProxyBaseUrl(): { patched: string[]; alreadySet: string[] } {
-    const { readFileSync, writeFileSync, existsSync } = require("node:fs");
-    const { join } = require("node:path");
-    const { homedir } = require("node:os");
-    const configPath = join(homedir(), ".openclaw", "openclaw.json");
-
-    if (!existsSync(configPath)) return { patched: [], alreadySet: [] };
-    const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
-
-    const port = config.proxy?.port ?? 19821;
-    const proxyUrl = `http://127.0.0.1:${port}`;
-
-    // Figure out which providers are configured
-    const upstreamConfig = proxyConfig ? buildUpstreamConfig(proxyConfig) : {};
-    const providers = Object.keys(upstreamConfig).filter(
-      (k) => upstreamConfig[k as keyof typeof upstreamConfig],
-    );
-
-    const patched: string[] = [];
-    const alreadySet: string[] = [];
-
-    if (!cfg.models) cfg.models = {};
-    if (!cfg.models.mode) cfg.models.mode = "merge";
-    if (!cfg.models.providers) cfg.models.providers = {};
-
-    for (const provider of providers) {
-      if (!cfg.models.providers[provider]) cfg.models.providers[provider] = {};
-      // Ensure models array exists (OpenClaw requires it)
-      if (!Array.isArray(cfg.models.providers[provider].models)) {
-        cfg.models.providers[provider].models = [];
-      }
-      if (cfg.models.providers[provider].baseUrl === proxyUrl) {
-        alreadySet.push(provider);
+      // Map known OpenClaw built-in tools to resource types
+      if (toolName === "exec" || toolName === "process") {
+        resourceType = "Shell";
+        action = "exec_command";
+        const cmd = (params.command as string) ?? "";
+        resourceId = cmd.trim().split(/\s+/)[0]?.replace(/^.*\//, "") || toolName;
+        context = { args: cmd, workdir: (params.workdir as string) ?? "" };
+      } else if (toolName === "web_fetch" || toolName === "web_search") {
+        resourceType = "API";
+        action = "call_api";
+        const url = (params.url as string) ?? (params.query as string) ?? "";
+        try {
+          resourceId = url.startsWith("http") ? new URL(url).hostname : toolName;
+        } catch {
+          resourceId = toolName;
+        }
+        context = { url, method: (params.method as string) ?? "GET", body: (params.body as string) ?? "" };
+      } else if (toolName === "browser") {
+        resourceType = "Tool";
+        action = "call_tool";
+        resourceId = "browser";
+        context = { action: (params.action as string) ?? "" };
       } else {
-        // Store original baseUrl for clean revert
-        if (cfg.models.providers[provider].baseUrl && cfg.models.providers[provider].baseUrl !== proxyUrl) {
-          cfg.models.providers[provider]._originalBaseUrl = cfg.models.providers[provider].baseUrl;
-        }
-        cfg.models.providers[provider].baseUrl = proxyUrl;
-        patched.push(provider);
+        // MCP or other tools
+        context = params ? { arguments: params } : {};
       }
-    }
 
-    // Ensure plugin config is under plugins.entries.carapace.config
-    if (!cfg.plugins) cfg.plugins = {};
-    if (!cfg.plugins.entries) cfg.plugins.entries = {};
-    if (!cfg.plugins.entries.carapace) cfg.plugins.entries.carapace = {};
-    if (!cfg.plugins.entries.carapace.config) cfg.plugins.entries.carapace.config = {};
+      const decision = await cedar.authorize({
+        principal: `Agent::"openclaw"`,
+        action: `Action::"${action}"`,
+        resource: `${resourceType}::"${resourceId}"`,
+        context,
+      });
 
-    if (patched.length > 0 || !cfg.plugins.entries.carapace.enabled) {
-      cfg.plugins.entries.carapace.enabled = true;
-      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
-    }
+      const auditEntry = {
+        timestamp: new Date().toISOString(),
+        tool: toolName,
+        decision: decision.decision,
+        reasons: decision.reasons,
+        params: Object.keys(params).length > 0 ? params : undefined,
+      };
+      appendAuditLog(auditEntry);
 
-    // Also patch the per-agent models.json (this is what OpenClaw actually reads at runtime)
-    // openclaw.json models.providers gets merged INTO models.json on restart,
-    // but if someone restores openclaw.json from backup, models.json keeps the stale baseUrl.
-    // So we patch both files for safety.
-    const agentModelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
-    if (existsSync(agentModelsPath)) {
-      try {
-        const agentModels = JSON.parse(readFileSync(agentModelsPath, "utf-8"));
-        let agentModelsChanged = false;
-        if (!agentModels.providers) agentModels.providers = {};
-        for (const provider of providers) {
-          if (!agentModels.providers[provider]) agentModels.providers[provider] = {};
-          if (agentModels.providers[provider].baseUrl !== proxyUrl) {
-            if (agentModels.providers[provider].baseUrl && agentModels.providers[provider].baseUrl !== proxyUrl) {
-              agentModels.providers[provider]._originalBaseUrl = agentModels.providers[provider].baseUrl;
-            }
-            agentModels.providers[provider].baseUrl = proxyUrl;
-            agentModelsChanged = true;
-          }
-        }
-        if (agentModelsChanged) {
-          // Backup models.json before modifying
-          const modelsBackup = agentModelsPath + ".carapace-backup";
-          if (!existsSync(modelsBackup)) {
-            const { copyFileSync } = require("node:fs");
-            copyFileSync(agentModelsPath, modelsBackup);
-          }
-          writeFileSync(agentModelsPath, JSON.stringify(agentModels, null, 2) + "\n", "utf-8");
-          patched.push(...providers.map(p => `models.json:${p}`));
-        }
-      } catch (e: any) {
-        logger.warn(`Failed to patch agent models.json: ${e.message}`);
+      if (decision.decision === "deny") {
+        stats.toolCallsDenied++;
+        const reason = `Cedar policy denied: ${toolName} (${decision.reasons.join(", ") || "default deny"})`;
+        logger.info(`🚫 ${reason}`);
+        return { block: true, blockReason: reason };
       }
-    }
 
-    return { patched, alreadySet };
+      return {};
+    });
+    logger.info("Registered before_tool_call hook for Cedar policy enforcement");
+  } else {
+    logger.warn("⚠️  before_tool_call hook not available — Cedar policies will NOT be enforced on built-in tools");
   }
 
   // --- Background service: connect to MCP servers and serve GUI ---
@@ -276,54 +187,21 @@ export default function register(api: OpenClawPluginApi) {
       await gui.start();
       logger.info(`Control GUI at http://localhost:${config.guiPort ?? 19820}`);
 
-      if (proxy) {
-        await proxy.start();
-
-        // Health check: verify proxy is actually responding
-        const proxyPort = proxyConfig!.port ?? 19821;
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 3000);
-          const healthResp = await fetch(`http://127.0.0.1:${proxyPort}/health`, { signal: controller.signal });
-          clearTimeout(timer);
-          if (!healthResp.ok) throw new Error(`HTTP ${healthResp.status}`);
-        } catch (err: any) {
-          logger.error(`❌ Proxy health check failed on port ${proxyPort}: ${err.message}. Disabling proxy.`);
-          try { await proxy.stop(); } catch {}
-          proxy = null;
-        }
-
-        if (proxy) {
-          logger.info(
-            `🛡️  LLM Proxy active on http://127.0.0.1:${proxyPort} — ` +
-            `all tool calls go through Cedar`
-          );
-        }
-      } else {
-        // Check for bypass vulnerabilities only when proxy is disabled
-        const bypasses = checkForBypasses();
-        if (bypasses.length > 0) {
-          logger.warn(
-            `⚠️  BYPASS RISK: Built-in tools [${bypasses.join(", ")}] are NOT denied and LLM proxy is not enabled. ` +
-            `Agents can use these to bypass Carapace Cedar policies. ` +
-            `Enable the LLM proxy (recommended) or run "openclaw carapace setup" to deny built-in tools.`
-          );
-        }
-      }
-
-      // Warn if Carapace is loaded but not actually enforcing anything
-      const tools = aggregator.listTools();
-      const enabledCount = tools.filter((t: any) => t.enabled).length;
-      if (!proxy && enabledCount === 0) {
+      // Warn if no policies are loaded
+      const policies = cedar.getPolicies();
+      if (policies.length === 0) {
         logger.warn(
-          `⚠️  Carapace is loaded but NOT ENFORCING. No tools are gated and the LLM proxy is disabled. ` +
-          `Your agent is running without policy protection. ` +
-          `Run "openclaw carapace setup" to activate enforcement, or configure policies at http://localhost:${config.guiPort ?? 19820}`
+          `⚠️  Carapace is loaded but NOT ENFORCING — no Cedar policies found. ` +
+          `Add policies to ${config.policyDir ?? "~/.openclaw/mcp-policies/"} or use the GUI at http://localhost:${config.guiPort ?? 19820}`
         );
       }
+
+      logger.info(
+        `🛡️  Cedar enforcement active via before_tool_call hook — ` +
+        `${policies.length} policies loaded, default: ${config.defaultPolicy ?? "allow-all"}`
+      );
     },
     async stop() {
-      if (proxy) await proxy.stop();
       await gui.stop();
       await aggregator.disconnectAll();
       logger.info("Carapace stopped");
@@ -348,17 +226,12 @@ export default function register(api: OpenClawPluginApi) {
     async execute(_toolCallId: string, params: { server?: string }) {
       const tools = aggregator.listTools(params.server);
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(tools, null, 2),
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(tools, null, 2) }],
       };
     },
   });
 
-  // --- Agent tool: invoke an MCP tool through the proxy ---
+  // --- Agent tool: invoke an MCP tool through Cedar ---
   api.registerTool({
     name: "mcp_call",
     label: "MCP Call (Carapace)",
@@ -380,8 +253,6 @@ export default function register(api: OpenClawPluginApi) {
     },
     async execute(_toolCallId: string, params: { tool: string; arguments?: Record<string, unknown> }) {
       const { tool, arguments: args } = params;
-
-      // Authorize via Cedar
       const decision = await cedar.authorize({
         principal: 'Agent::"openclaw"',
         action: 'Action::"call_tool"',
@@ -391,53 +262,35 @@ export default function register(api: OpenClawPluginApi) {
 
       if (decision.decision === "deny") {
         return {
-          content: [
-            {
-              type: "text",
-              text: `DENIED by Cedar policy: ${tool}\nReason: ${decision.reasons.join(", ") || "default deny"}`,
-            },
-          ],
+          content: [{ type: "text", text: `DENIED by Cedar policy: ${tool}\nReason: ${decision.reasons.join(", ") || "default deny"}` }],
           isError: true,
         };
       }
 
-      // Forward to upstream MCP server
       const result = await aggregator.callTool(tool, args ?? {});
       return result;
     },
   });
 
-  // --- Agent tool: execute a shell command through Cedar authorization ---
+  // --- Agent tool: Cedar-gated shell exec ---
   api.registerTool({
     name: "carapace_exec",
     label: "Shell Exec (Carapace)",
     description:
-      "Execute a shell command through the Carapace Cedar proxy. The command is authorized by Cedar policies before execution. Use this when you want Cedar-gated shell access.",
+      "Execute a shell command through the Carapace Cedar proxy. The command is authorized by Cedar policies before execution.",
     parameters: {
       type: "object",
       required: ["command"],
       properties: {
-        command: {
-          type: "string",
-          description: "The shell command to execute (e.g., 'git status', 'npm install')",
-        },
-        workdir: {
-          type: "string",
-          description: "Working directory for the command (optional)",
-        },
-        timeout: {
-          type: "number",
-          description: "Timeout in seconds (default: 30)",
-        },
+        command: { type: "string", description: "The shell command to execute" },
+        workdir: { type: "string", description: "Working directory (optional)" },
+        timeout: { type: "number", description: "Timeout in seconds (default: 30)" },
       },
     },
     async execute(_toolCallId: string, params: { command: string; workdir?: string; timeout?: number }) {
       const { command, workdir, timeout = 30 } = params;
-
-      // Extract the binary name for policy matching
       const binary = command.trim().split(/\s+/)[0].replace(/^.*\//, "");
 
-      // Authorize via Cedar
       const decision = await cedar.authorize({
         principal: `Agent::"openclaw"`,
         action: `Action::"exec_command"`,
@@ -447,17 +300,11 @@ export default function register(api: OpenClawPluginApi) {
 
       if (decision.decision === "deny") {
         return {
-          content: [
-            {
-              type: "text",
-              text: `DENIED by Cedar policy: shell command "${binary}"\nFull command: ${command}\nReason: ${decision.reasons.join(", ") || "default deny"}`,
-            },
-          ],
+          content: [{ type: "text", text: `DENIED by Cedar policy: shell command "${binary}"\nFull command: ${command}\nReason: ${decision.reasons.join(", ") || "default deny"}` }],
           isError: true,
         };
       }
 
-      // Execute the command
       try {
         const { execSync } = await import("node:child_process");
         const result = execSync(command, {
@@ -467,49 +314,31 @@ export default function register(api: OpenClawPluginApi) {
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
         });
-        return {
-          content: [{ type: "text", text: result }],
-        };
+        return { content: [{ type: "text", text: result }] };
       } catch (err: any) {
-        const output = err.stdout ?? err.stderr ?? err.message;
         return {
-          content: [{ type: "text", text: `Command failed (exit ${err.status ?? "?"}): ${output}` }],
+          content: [{ type: "text", text: `Command failed (exit ${err.status ?? "?"}): ${err.stdout ?? err.stderr ?? err.message}` }],
           isError: true,
         };
       }
     },
   }, { optional: true });
 
-  // --- Agent tool: make an HTTP API call through Cedar authorization ---
+  // --- Agent tool: Cedar-gated HTTP fetch ---
   api.registerTool({
     name: "carapace_fetch",
     label: "API Fetch (Carapace)",
     description:
-      "Make an HTTP API call through the Carapace Cedar proxy. The request is authorized by Cedar policies before being sent. Use this when you want Cedar-gated outbound API access.",
+      "Make an HTTP API call through Carapace Cedar authorization.",
     parameters: {
       type: "object",
       required: ["url"],
       properties: {
-        url: {
-          type: "string",
-          description: "The URL to fetch",
-        },
-        method: {
-          type: "string",
-          description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Default: GET",
-        },
-        headers: {
-          type: "object",
-          description: "HTTP headers to include",
-        },
-        body: {
-          type: "string",
-          description: "Request body (for POST/PUT/PATCH)",
-        },
-        timeout: {
-          type: "number",
-          description: "Timeout in seconds (default: 30)",
-        },
+        url: { type: "string", description: "The URL to fetch" },
+        method: { type: "string", description: "HTTP method (default: GET)" },
+        headers: { type: "object", description: "HTTP headers" },
+        body: { type: "string", description: "Request body" },
+        timeout: { type: "number", description: "Timeout in seconds (default: 30)" },
       },
     },
     async execute(_toolCallId: string, params: {
@@ -517,18 +346,11 @@ export default function register(api: OpenClawPluginApi) {
     }) {
       const { url, method = "GET", headers = {}, body, timeout = 30 } = params;
 
-      // Extract domain for policy matching
       let domain: string;
-      try {
-        domain = new URL(url).hostname;
-      } catch {
-        return {
-          content: [{ type: "text", text: `Invalid URL: ${url}` }],
-          isError: true,
-        };
+      try { domain = new URL(url).hostname; } catch {
+        return { content: [{ type: "text", text: `Invalid URL: ${url}` }], isError: true };
       }
 
-      // Authorize via Cedar
       const decision = await cedar.authorize({
         principal: `Agent::"openclaw"`,
         action: `Action::"call_api"`,
@@ -538,57 +360,29 @@ export default function register(api: OpenClawPluginApi) {
 
       if (decision.decision === "deny") {
         return {
-          content: [
-            {
-              type: "text",
-              text: `DENIED by Cedar policy: API call to "${domain}"\nURL: ${url}\nMethod: ${method}\nReason: ${decision.reasons.join(", ") || "default deny"}`,
-            },
-          ],
+          content: [{ type: "text", text: `DENIED by Cedar policy: API call to "${domain}"\nURL: ${url}\nReason: ${decision.reasons.join(", ") || "default deny"}` }],
           isError: true,
         };
       }
 
-      // Make the HTTP request
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeout * 1000);
-
-        const response = await fetch(url, {
-          method,
-          headers,
-          body: body ?? undefined,
-          signal: controller.signal,
-        });
-
+        const response = await fetch(url, { method, headers, body: body ?? undefined, signal: controller.signal });
         clearTimeout(timer);
-
         const responseText = await response.text();
-        const truncated = responseText.length > 50000
-          ? responseText.slice(0, 50000) + "\n...[truncated]"
-          : responseText;
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: `HTTP ${response.status} ${response.statusText}\n\n${truncated}`,
-            },
-          ],
-          isError: !response.ok,
-        };
+        const truncated = responseText.length > 50000 ? responseText.slice(0, 50000) + "\n...[truncated]" : responseText;
+        return { content: [{ type: "text", text: `HTTP ${response.status} ${response.statusText}\n\n${truncated}` }], isError: !response.ok };
       } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `API call failed: ${err.message}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `API call failed: ${err.message}` }], isError: true };
       }
     },
   }, { optional: true });
 
-  // --- CLI command ---
+  // --- CLI commands ---
   api.registerCli?.(
     ({ program }) => {
-      const cmd = program.command("carapace").description("Carapace — MCP tool authorization");
+      const cmd = program.command("carapace").description("Carapace — Cedar policy enforcement for agent tools");
 
       cmd.command("status").action(async () => {
         const servers = aggregator.getServerStatus();
@@ -602,13 +396,11 @@ export default function register(api: OpenClawPluginApi) {
         console.log(`\n  ${enabled}/${tools.length} tools enabled`);
         console.log(`  GUI: http://localhost:${config.guiPort ?? 19820}`);
 
-        if (proxy) {
-          const stats = proxy.getStats();
-          console.log(`\n  🛡️  LLM Proxy: http://127.0.0.1:${proxyConfig!.port ?? 19821}`);
-          console.log(`  Requests: ${stats.requests} | Tool calls evaluated: ${stats.toolCallsEvaluated} | Denied: ${stats.toolCallsDenied}`);
-        } else {
-          console.log(`\n  ⚠️  LLM Proxy: disabled`);
-        }
+        const policies = cedar.getPolicies();
+        console.log(`\n  🛡️  Enforcement: before_tool_call hook`);
+        console.log(`  Policies: ${policies.length} loaded`);
+        console.log(`  Default: ${config.defaultPolicy ?? "allow-all"}`);
+        console.log(`  Evaluated: ${stats.toolCallsEvaluated} | Denied: ${stats.toolCallsDenied}`);
         console.log();
       });
 
@@ -626,282 +418,102 @@ export default function register(api: OpenClawPluginApi) {
           console.log("✅ All policies verified");
         } else {
           console.log("⚠️  Verification issues:");
-          for (const issue of result.issues) {
-            console.log(`  - ${issue}`);
-          }
+          for (const issue of result.issues) console.log(`  - ${issue}`);
         }
       });
 
       cmd.command("setup")
-        .description("Configure OpenClaw to route all traffic through Carapace")
-        .option("--no-proxy", "Skip LLM proxy setup (tool-deny mode only)")
-        .action(async (opts: any) => {
-          const { readFileSync, writeFileSync, existsSync, copyFileSync } = require("node:fs");
+        .description("Enable Carapace plugin in OpenClaw config")
+        .action(async () => {
+          const { readFileSync, writeFileSync, existsSync } = require("node:fs");
           const { join } = require("node:path");
           const { homedir } = require("node:os");
 
           console.log("\n🦞 Carapace Setup\n");
-          backupConfig();
-          console.log("  📦 Backed up openclaw.json → openclaw.json.carapace-backup");
-          let anyChanges = false;
 
           const configPath = join(homedir(), ".openclaw", "openclaw.json");
-          const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
-          const skipProxy = opts.noProxy === true;
-
-          // Detect if proxy is already configured in the live config
-          const existingProxyEnabled = cfg.plugins?.entries?.carapace?.config?.proxy?.enabled;
-
-          if (!skipProxy && !existingProxyEnabled) {
-            // Enable the proxy by default — find the API key automatically
-            console.log("  🔍 Looking for Anthropic API key...");
-            let apiKey = "";
-
-            // Check auth.json
-            const authPath = join(homedir(), ".openclaw", "agents", "main", "agent", "auth.json");
-            if (existsSync(authPath)) {
-              try {
-                const auth = JSON.parse(readFileSync(authPath, "utf-8"));
-                apiKey = auth.anthropic?.key ?? "";
-              } catch {}
-            }
-
-            // Check environment
-            if (!apiKey) apiKey = process.env.ANTHROPIC_API_KEY ?? "";
-
-            if (!apiKey) {
-              console.log("  ⚠️  Could not find Anthropic API key.");
-              console.log("     Checked: ~/.openclaw/agents/main/agent/auth.json, ANTHROPIC_API_KEY env");
-              console.log("     Falling back to tool-deny mode (no proxy).\n");
-            } else {
-              console.log(`    Found key: ${apiKey.slice(0, 12)}...${apiKey.slice(-4)}`);
-
-              // Write proxy config into plugin entry
-              if (!cfg.plugins) cfg.plugins = {};
-              if (!cfg.plugins.entries) cfg.plugins.entries = {};
-              if (!cfg.plugins.entries.carapace) cfg.plugins.entries.carapace = {};
-              cfg.plugins.entries.carapace.enabled = true;
-              cfg.plugins.entries.carapace.config = {
-                defaultPolicy: "allow-all",
-                proxy: {
-                  enabled: true,
-                  port: 19821,
-                  upstream: "https://api.anthropic.com",
-                  apiKey,
-                },
-              };
-
-              // Set models.providers.anthropic.baseUrl
-              const proxyUrl = "http://127.0.0.1:19821";
-              if (!cfg.models) cfg.models = {};
-              if (!cfg.models.mode) cfg.models.mode = "merge";
-              if (!cfg.models.providers) cfg.models.providers = {};
-              if (!cfg.models.providers.anthropic) cfg.models.providers.anthropic = {};
-              if (!Array.isArray(cfg.models.providers.anthropic.models)) {
-                cfg.models.providers.anthropic.models = [];
-              }
-              if (cfg.models.providers.anthropic.baseUrl && cfg.models.providers.anthropic.baseUrl !== proxyUrl) {
-                cfg.models.providers.anthropic._originalBaseUrl = cfg.models.providers.anthropic.baseUrl;
-              }
-              cfg.models.providers.anthropic.baseUrl = proxyUrl;
-
-              // Do NOT deny built-in tools when proxy is enabled — proxy handles filtering
-              // Remove any previous tool denials from earlier setup runs
-              if (cfg.tools?.deny) {
-                cfg.tools.deny = cfg.tools.deny.filter((t: string) => !BYPASS_TOOLS.includes(t));
-                if (cfg.tools.deny.length === 0) delete cfg.tools.deny;
-                if (cfg.tools && Object.keys(cfg.tools).length === 0) delete cfg.tools;
-              }
-
-              writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
-
-              // Also patch models.json directly
-              const modelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
-              if (existsSync(modelsPath)) {
-                try {
-                  const modelsBackup = modelsPath + ".carapace-backup";
-                  if (!existsSync(modelsBackup)) copyFileSync(modelsPath, modelsBackup);
-                  const models = JSON.parse(readFileSync(modelsPath, "utf-8"));
-                  if (!models.providers) models.providers = {};
-                  if (!models.providers.anthropic) models.providers.anthropic = {};
-                  if (models.providers.anthropic.baseUrl && models.providers.anthropic.baseUrl !== proxyUrl) {
-                    models.providers.anthropic._originalBaseUrl = models.providers.anthropic.baseUrl;
-                  }
-                  models.providers.anthropic.baseUrl = proxyUrl;
-                  writeFileSync(modelsPath, JSON.stringify(models, null, 2) + "\n", "utf-8");
-                  console.log("    ✅ Patched models.json with proxy baseUrl");
-                } catch (e: any) {
-                  console.log(`    ⚠️  Could not patch models.json: ${e.message}`);
-                }
-              }
-
-              console.log("    ✅ LLM proxy enabled (allow-all policy, port 19821)");
-              console.log("       All API calls will route through Cedar.");
-              console.log("       Built-in tools (exec, web_fetch, web_search) are NOT denied — proxy handles them.\n");
-              anyChanges = true;
-            }
-          } else if (existingProxyEnabled) {
-            console.log("  ✅ LLM proxy already configured.");
-            // Ensure baseUrl is set
-            console.log("\n  Verifying baseUrl configuration:");
-            const { patched, alreadySet } = patchConfigProxyBaseUrl();
-            if (alreadySet.length > 0) console.log(`    Already set: ${alreadySet.join(", ")}`);
-            if (patched.length > 0) {
-              console.log(`    ✅ Set models.providers baseUrl for: ${patched.join(", ")}`);
-              anyChanges = true;
-            }
+          let cfg: any = {};
+          if (existsSync(configPath)) {
+            cfg = JSON.parse(readFileSync(configPath, "utf-8"));
           }
 
-          // If proxy not enabled (skipped or no key), fall back to tool-deny mode
-          const finalCfg = JSON.parse(readFileSync(configPath, "utf-8"));
-          if (!finalCfg.plugins?.entries?.carapace?.config?.proxy?.enabled) {
-            console.log("  Falling back to tool-deny mode:");
-            const bypasses = checkForBypasses();
-            if (bypasses.length > 0) {
-              const { patched, alreadyDenied } = patchConfigDenyTools();
-              if (alreadyDenied.length > 0) console.log(`    Already denied: ${alreadyDenied.join(", ")}`);
-              if (patched.length > 0) {
-                console.log(`    ✅ Added to tools.deny: ${patched.join(", ")}`);
-                anyChanges = true;
-              }
-            } else {
-              console.log("  ✅ Built-in bypass tools already denied.");
-            }
+          if (!cfg.plugins) cfg.plugins = {};
+          if (!cfg.plugins.entries) cfg.plugins.entries = {};
+          if (!cfg.plugins.entries.carapace) cfg.plugins.entries.carapace = {};
+
+          const alreadyEnabled = cfg.plugins.entries.carapace.enabled === true;
+
+          cfg.plugins.entries.carapace.enabled = true;
+          if (!cfg.plugins.entries.carapace.config) {
+            cfg.plugins.entries.carapace.config = {
+              defaultPolicy: "allow-all",
+            };
           }
 
-          if (anyChanges) {
+          writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+
+          if (alreadyEnabled) {
+            console.log("  ✅ Carapace already enabled. No changes needed.\n");
+          } else {
+            console.log("  ✅ Enabled carapace plugin in openclaw.json");
+            console.log("  🛡️  Cedar policies enforced via before_tool_call hook");
+            console.log("  📋 No models.json or baseUrl changes needed");
             console.log("\n  Restart the gateway for changes to take effect:");
             console.log("    openclaw gateway restart\n");
-          } else {
-            console.log("\n  ✅ Everything already configured. No changes needed.\n");
           }
         });
 
       cmd.command("uninstall")
-        .description("Reverse all config changes made by Carapace (restores built-in tools)")
+        .description("Disable Carapace plugin")
         .action(async () => {
+          const { readFileSync, writeFileSync, existsSync } = require("node:fs");
+          const { join } = require("node:path");
+          const { homedir } = require("node:os");
+
           console.log("\n🦞 Carapace Uninstall\n");
-          console.log("  This reverses changes made by 'openclaw carapace setup'.\n");
 
-          try {
-            const { readFileSync, writeFileSync, existsSync } = require("node:fs");
-            const { join } = require("node:path");
-            const { homedir } = require("node:os");
-            const configPath = join(homedir(), ".openclaw", "openclaw.json");
+          const configPath = join(homedir(), ".openclaw", "openclaw.json");
+          if (!existsSync(configPath)) {
+            console.log("  No config file found. Nothing to undo.\n");
+            return;
+          }
 
-            if (!existsSync(configPath)) {
-              console.log("  No config file found. Nothing to undo.\n");
-              return;
-            }
+          const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+          let changed = false;
 
-            const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
-            let changed = false;
+          if (cfg.plugins?.entries?.carapace?.enabled) {
+            cfg.plugins.entries.carapace.enabled = false;
+            changed = true;
+            console.log("  ✅ Disabled carapace plugin");
+          }
 
-            // Remove Carapace-added entries from tools.deny
-            if (cfg.tools?.deny) {
-              const before = cfg.tools.deny.length;
-              cfg.tools.deny = cfg.tools.deny.filter((t: string) => !BYPASS_TOOLS.includes(t));
-              if (cfg.tools.deny.length === 0) delete cfg.tools.deny;
-              if (cfg.tools && Object.keys(cfg.tools).length === 0) delete cfg.tools;
-              if (cfg.tools?.deny?.length !== before) {
-                changed = true;
-                console.log(`  ✅ Removed [${BYPASS_TOOLS.join(", ")}] from tools.deny`);
-                console.log("     Built-in exec, web_fetch, and web_search are restored.");
-              }
-            }
-
-            // Remove models.providers baseUrl override if it points at the proxy
-            const proxyPort = cfg.plugins?.entries?.carapace?.config?.proxy?.port ?? 19821;
-            const proxyUrl = `http://127.0.0.1:${proxyPort}`;
-            if (cfg.models?.providers) {
-              for (const [name, provCfg] of Object.entries(cfg.models.providers)) {
-                if ((provCfg as any)?.baseUrl === proxyUrl) {
-                  // Restore original baseUrl if stored
-                  if ((provCfg as any)._originalBaseUrl) {
-                    (provCfg as any).baseUrl = (provCfg as any)._originalBaseUrl;
-                    delete (provCfg as any)._originalBaseUrl;
-                    console.log(`  ✅ Restored original baseUrl for ${name}`);
-                  } else {
-                    delete (provCfg as any).baseUrl;
-                    console.log(`  ✅ Removed baseUrl proxy override for ${name}`);
-                  }
-                  // Clean up empty objects
-                  if (Object.keys(provCfg as any).length === 0) delete cfg.models.providers[name];
-                  changed = true;
-                  console.log(`     ${name} will connect directly to its API again.`);
-                }
-              }
-              if (Object.keys(cfg.models.providers).length === 0) delete cfg.models.providers;
-              if (cfg.models && Object.keys(cfg.models).length === 0) delete cfg.models;
-            }
-
-            // Also clean up the per-agent models.json
-            const agentModelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
-            if (existsSync(agentModelsPath)) {
-              try {
-                const agentModels = JSON.parse(readFileSync(agentModelsPath, "utf-8"));
-                let modelsChanged = false;
-                if (agentModels.providers) {
-                  for (const [name, provCfg] of Object.entries(agentModels.providers)) {
-                    if ((provCfg as any)?.baseUrl === proxyUrl) {
-                      if ((provCfg as any)._originalBaseUrl) {
-                        (provCfg as any).baseUrl = (provCfg as any)._originalBaseUrl;
-                        delete (provCfg as any)._originalBaseUrl;
-                      } else {
-                        delete (provCfg as any).baseUrl;
-                      }
-                      if (Object.keys(provCfg as any).length === 0) delete agentModels.providers[name];
-                      modelsChanged = true;
-                      console.log(`  ✅ Cleaned proxy baseUrl from models.json for ${name}`);
-                    }
-                  }
-                }
-                if (modelsChanged) {
-                  writeFileSync(agentModelsPath, JSON.stringify(agentModels, null, 2) + "\n", "utf-8");
-                  changed = true;
-                }
-              } catch (e: any) {
-                console.log(`  ⚠️  Could not clean models.json: ${e.message}`);
-              }
-            }
-
-            // Disable the plugin entry (don't delete — user might want to re-enable)
-            if (cfg.plugins?.entries?.carapace?.enabled) {
-              cfg.plugins.entries.carapace.enabled = false;
-              changed = true;
-              console.log("  ✅ Disabled carapace plugin in config");
-            }
-
-            if (changed) {
-              writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
-              console.log("\n  Config updated. Restart the gateway for changes to take effect:");
-              console.log("    openclaw gateway restart\n");
-              console.log("  To fully remove the plugin files:");
-              console.log("    rm -rf ~/.openclaw/extensions/carapace\n");
-            } else {
-              console.log("  No Carapace changes found in config. Nothing to undo.\n");
-            }
-
-
-          } catch (err: any) {
-            console.log(`  ❌ Error: ${err.message}\n`);
+          if (changed) {
+            writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+            console.log("\n  Restart the gateway for changes to take effect:");
+            console.log("    openclaw gateway restart\n");
+            console.log("  To fully remove the plugin files:");
+            console.log("    rm -rf ~/.openclaw/extensions/carapace\n");
+          } else {
+            console.log("  Carapace already disabled. Nothing to undo.\n");
           }
         });
 
       cmd.command("check")
-        .description("Check for bypass vulnerabilities (built-in tools that skip Cedar)")
+        .description("Check Cedar policy status")
         .action(async () => {
           console.log("\n🦞 Carapace Security Check\n");
-          const bypasses = checkForBypasses();
-          if (bypasses.length === 0) {
-            console.log("  ✅ No bypass vulnerabilities found.");
-            console.log("  All agent exec/fetch operations go through Cedar.\n");
+          const policies = cedar.getPolicies();
+          if (policies.length === 0) {
+            console.log("  ⚠️  No Cedar policies loaded.");
+            console.log(`  Add policies to ${config.policyDir ?? "~/.openclaw/mcp-policies/"}\n`);
           } else {
-            console.log("  ⚠️  Bypass vulnerabilities found:\n");
-            for (const tool of bypasses) {
-              console.log(`    🔓 ${tool} — agents can bypass Cedar policies via this tool`);
+            console.log(`  ✅ ${policies.length} Cedar policies loaded`);
+            console.log(`  🛡️  Enforcement via before_tool_call hook`);
+            console.log(`  Default: ${config.defaultPolicy ?? "allow-all"}\n`);
+            for (const p of policies) {
+              console.log(`    ${p.effect === "permit" ? "🟢" : "🔴"} ${p.id}`);
             }
-            console.log(`\n  Run "openclaw carapace setup" to fix.\n`);
+            console.log();
           }
         });
     },
@@ -912,6 +524,14 @@ export default function register(api: OpenClawPluginApi) {
   api.registerGatewayMethod?.("carapace.status", ({ respond }) => {
     const servers = aggregator.getServerStatus();
     const tools = aggregator.listTools();
-    respond(true, { servers, toolCount: tools.length, enabledCount: tools.filter((t) => t.enabled).length });
+    const policies = cedar.getPolicies();
+    respond(true, {
+      servers,
+      toolCount: tools.length,
+      enabledCount: tools.filter((t) => t.enabled).length,
+      policyCount: policies.length,
+      enforcement: "before_tool_call",
+      stats,
+    });
   });
 }
