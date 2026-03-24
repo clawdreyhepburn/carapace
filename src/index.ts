@@ -634,47 +634,139 @@ export default function register(api: OpenClawPluginApi) {
 
       cmd.command("setup")
         .description("Configure OpenClaw to route all traffic through Carapace")
-        .action(async () => {
+        .option("--no-proxy", "Skip LLM proxy setup (tool-deny mode only)")
+        .action(async (opts: any) => {
+          const { readFileSync, writeFileSync, existsSync, copyFileSync } = require("node:fs");
+          const { join } = require("node:path");
+          const { homedir } = require("node:os");
+
           console.log("\n🦞 Carapace Setup\n");
           backupConfig();
           console.log("  📦 Backed up openclaw.json → openclaw.json.carapace-backup");
           let anyChanges = false;
 
-          // 1. Deny built-in bypass tools
-          const bypasses = checkForBypasses();
-          if (bypasses.length > 0) {
-            console.log("  Denying built-in tools that bypass Cedar:");
-            const { patched, alreadyDenied } = patchConfigDenyTools();
-            if (alreadyDenied.length > 0) {
-              console.log(`    Already denied: ${alreadyDenied.join(", ")}`);
+          const configPath = join(homedir(), ".openclaw", "openclaw.json");
+          const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+          const skipProxy = opts.noProxy === true;
+
+          // Detect if proxy is already configured in the live config
+          const existingProxyEnabled = cfg.plugins?.entries?.carapace?.config?.proxy?.enabled;
+
+          if (!skipProxy && !existingProxyEnabled) {
+            // Enable the proxy by default — find the API key automatically
+            console.log("  🔍 Looking for Anthropic API key...");
+            let apiKey = "";
+
+            // Check auth.json
+            const authPath = join(homedir(), ".openclaw", "agents", "main", "agent", "auth.json");
+            if (existsSync(authPath)) {
+              try {
+                const auth = JSON.parse(readFileSync(authPath, "utf-8"));
+                apiKey = auth.anthropic?.key ?? "";
+              } catch {}
             }
-            if (patched.length > 0) {
-              console.log(`    ✅ Added to tools.deny: ${patched.join(", ")}`);
+
+            // Check environment
+            if (!apiKey) apiKey = process.env.ANTHROPIC_API_KEY ?? "";
+
+            if (!apiKey) {
+              console.log("  ⚠️  Could not find Anthropic API key.");
+              console.log("     Checked: ~/.openclaw/agents/main/agent/auth.json, ANTHROPIC_API_KEY env");
+              console.log("     Falling back to tool-deny mode (no proxy).\n");
+            } else {
+              console.log(`    Found key: ${apiKey.slice(0, 12)}...${apiKey.slice(-4)}`);
+
+              // Write proxy config into plugin entry
+              if (!cfg.plugins) cfg.plugins = {};
+              if (!cfg.plugins.entries) cfg.plugins.entries = {};
+              if (!cfg.plugins.entries.carapace) cfg.plugins.entries.carapace = {};
+              cfg.plugins.entries.carapace.enabled = true;
+              cfg.plugins.entries.carapace.config = {
+                defaultPolicy: "allow-all",
+                proxy: {
+                  enabled: true,
+                  port: 19821,
+                  upstream: "https://api.anthropic.com",
+                  apiKey,
+                },
+              };
+
+              // Set models.providers.anthropic.baseUrl
+              const proxyUrl = "http://127.0.0.1:19821";
+              if (!cfg.models) cfg.models = {};
+              if (!cfg.models.mode) cfg.models.mode = "merge";
+              if (!cfg.models.providers) cfg.models.providers = {};
+              if (!cfg.models.providers.anthropic) cfg.models.providers.anthropic = {};
+              if (!Array.isArray(cfg.models.providers.anthropic.models)) {
+                cfg.models.providers.anthropic.models = [];
+              }
+              if (cfg.models.providers.anthropic.baseUrl && cfg.models.providers.anthropic.baseUrl !== proxyUrl) {
+                cfg.models.providers.anthropic._originalBaseUrl = cfg.models.providers.anthropic.baseUrl;
+              }
+              cfg.models.providers.anthropic.baseUrl = proxyUrl;
+
+              // Do NOT deny built-in tools when proxy is enabled — proxy handles filtering
+              // Remove any previous tool denials from earlier setup runs
+              if (cfg.tools?.deny) {
+                cfg.tools.deny = cfg.tools.deny.filter((t: string) => !BYPASS_TOOLS.includes(t));
+                if (cfg.tools.deny.length === 0) delete cfg.tools.deny;
+                if (cfg.tools && Object.keys(cfg.tools).length === 0) delete cfg.tools;
+              }
+
+              writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+
+              // Also patch models.json directly
+              const modelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
+              if (existsSync(modelsPath)) {
+                try {
+                  const modelsBackup = modelsPath + ".carapace-backup";
+                  if (!existsSync(modelsBackup)) copyFileSync(modelsPath, modelsBackup);
+                  const models = JSON.parse(readFileSync(modelsPath, "utf-8"));
+                  if (!models.providers) models.providers = {};
+                  if (!models.providers.anthropic) models.providers.anthropic = {};
+                  if (models.providers.anthropic.baseUrl && models.providers.anthropic.baseUrl !== proxyUrl) {
+                    models.providers.anthropic._originalBaseUrl = models.providers.anthropic.baseUrl;
+                  }
+                  models.providers.anthropic.baseUrl = proxyUrl;
+                  writeFileSync(modelsPath, JSON.stringify(models, null, 2) + "\n", "utf-8");
+                  console.log("    ✅ Patched models.json with proxy baseUrl");
+                } catch (e: any) {
+                  console.log(`    ⚠️  Could not patch models.json: ${e.message}`);
+                }
+              }
+
+              console.log("    ✅ LLM proxy enabled (allow-all policy, port 19821)");
+              console.log("       All API calls will route through Cedar.");
+              console.log("       Built-in tools (exec, web_fetch, web_search) are NOT denied — proxy handles them.\n");
               anyChanges = true;
             }
-          } else {
-            console.log("  ✅ Built-in bypass tools already denied.");
-          }
-
-          // 2. Set up LLM proxy baseUrl if proxy is configured
-          if (config.proxy?.enabled) {
-            console.log("\n  Configuring LLM proxy baseUrl:");
+          } else if (existingProxyEnabled) {
+            console.log("  ✅ LLM proxy already configured.");
+            // Ensure baseUrl is set
+            console.log("\n  Verifying baseUrl configuration:");
             const { patched, alreadySet } = patchConfigProxyBaseUrl();
-            if (alreadySet.length > 0) {
-              console.log(`    Already set: ${alreadySet.join(", ")}`);
-            }
+            if (alreadySet.length > 0) console.log(`    Already set: ${alreadySet.join(", ")}`);
             if (patched.length > 0) {
               console.log(`    ✅ Set models.providers baseUrl for: ${patched.join(", ")}`);
               anyChanges = true;
             }
-            if (patched.length === 0 && alreadySet.length === 0) {
-              console.log("    ⚠️  No upstream providers configured in proxy config.");
-              console.log('       Set proxy.upstream to a URL string (e.g., "https://api.anthropic.com") with proxy.apiKey,');
-              console.log("       or use the object format: proxy.upstream = { anthropic: { apiKey: '...' } }");
+          }
+
+          // If proxy not enabled (skipped or no key), fall back to tool-deny mode
+          const finalCfg = JSON.parse(readFileSync(configPath, "utf-8"));
+          if (!finalCfg.plugins?.entries?.carapace?.config?.proxy?.enabled) {
+            console.log("  Falling back to tool-deny mode:");
+            const bypasses = checkForBypasses();
+            if (bypasses.length > 0) {
+              const { patched, alreadyDenied } = patchConfigDenyTools();
+              if (alreadyDenied.length > 0) console.log(`    Already denied: ${alreadyDenied.join(", ")}`);
+              if (patched.length > 0) {
+                console.log(`    ✅ Added to tools.deny: ${patched.join(", ")}`);
+                anyChanges = true;
+              }
+            } else {
+              console.log("  ✅ Built-in bypass tools already denied.");
             }
-          } else {
-            console.log("\n  LLM proxy not enabled — skipping baseUrl setup.");
-            console.log("  To enable, add proxy.enabled: true to your Carapace plugin config.");
           }
 
           if (anyChanges) {
