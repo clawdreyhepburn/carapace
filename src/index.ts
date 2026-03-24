@@ -773,38 +773,6 @@ export default function register(api: OpenClawPluginApi) {
               }
             }
 
-            // Clean up per-agent models.json (this is what actually routes API calls)
-            const agentModelsPath = join(homedir(), ".openclaw", "agents", "main", "agent", "models.json");
-            if (existsSync(agentModelsPath)) {
-              try {
-                const agentModels = JSON.parse(readFileSync(agentModelsPath, "utf-8"));
-                let modelsChanged = false;
-                if (agentModels.providers) {
-                  for (const [name, provCfg] of Object.entries(agentModels.providers)) {
-                    if ((provCfg as any)?.baseUrl === proxyUrl) {
-                      if ((provCfg as any)._originalBaseUrl) {
-                        (provCfg as any).baseUrl = (provCfg as any)._originalBaseUrl;
-                        delete (provCfg as any)._originalBaseUrl;
-                      } else {
-                        delete (provCfg as any).baseUrl;
-                      }
-                      // Remove empty provider entries (but keep ones with other config)
-                      const remaining = Object.keys(provCfg as any).filter(k => k !== 'models' || (provCfg as any).models?.length > 0);
-                      if (remaining.length === 0) delete agentModels.providers[name];
-                      modelsChanged = true;
-                      console.log(`  ✅ Cleaned proxy baseUrl from models.json (${name})`);
-                    }
-                  }
-                }
-                if (modelsChanged) {
-                  writeFileSync(agentModelsPath, JSON.stringify(agentModels, null, 2) + "\n", "utf-8");
-                  changed = true;
-                }
-              } catch (e: any) {
-                console.log(`  ⚠️  Could not clean models.json: ${e.message}`);
-              }
-            }
-
             // Disable the plugin entry (don't delete — user might want to re-enable)
             if (cfg.plugins?.entries?.carapace?.enabled) {
               cfg.plugins.entries.carapace.enabled = false;
