@@ -35,7 +35,7 @@ interface OpenClawPluginApi {
     },
     opts?: { optional?: boolean },
   ): void;
-  registerHook?(hookName: string, handler: (event: any) => Promise<any> | any): void;
+  registerHook?(hookName: string | string[], handler: (event: any) => Promise<any> | any, opts?: { name: string; description?: string; priority?: number }): void;
   registerCli?(fn: (ctx: { program: any }) => void, opts?: { commands: string[] }): void;
   registerGatewayMethod?(name: string, handler: (ctx: { respond: (ok: boolean, data: any) => void }) => void): void;
 }
